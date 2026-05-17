@@ -1,0 +1,386 @@
+import sys
+import os
+
+# ---------------------------------------------------------------------------
+# Import engine
+# ---------------------------------------------------------------------------
+try:
+    import importlib
+    _lib_dir = os.path.expanduser(
+        "~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/topaz_lib"
+    )
+    if _lib_dir not in sys.path:
+        sys.path.insert(0, _lib_dir)
+    import _topaz_resolve_engine as engine
+    importlib.reload(engine)
+except Exception as e:
+    print("Engine import failed: %s" % e)
+    sys.exit(1)
+
+# ---------------------------------------------------------------------------
+# Resolve objects
+# ---------------------------------------------------------------------------
+try:
+    projectManager = resolve.GetProjectManager()
+    project = projectManager.GetCurrentProject()
+    timeline = project.GetCurrentTimeline()
+    media_pool = project.GetMediaPool()
+    fusion = resolve.Fusion()
+    ui = fusion.UIManager
+    dispatcher = bmd.UIDispatcher(ui)
+except NameError:
+    print("Must run from DaVinci Resolve Scripts menu.")
+    sys.exit(1)
+
+# ---------------------------------------------------------------------------
+# Window
+# ---------------------------------------------------------------------------
+win = dispatcher.AddWindow({
+    'ID': "TopazBatchWin",
+    'WindowTitle': "Topaz API Batch Processor",
+    'Geometry': [200, 200, 500, 500],
+}, ui.VGroup([
+    ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Select Video Track:', 'Weight': 0.3}),
+        ui.LineEdit({'ID': 'TrackNum', 'Text': '1', 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Topaz Model:', 'Weight': 0.3}),
+        ui.ComboBox({'ID': 'ModelCombo', 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Output Resolution:', 'Weight': 0.3}),
+        ui.ComboBox({'ID': 'ResCombo', 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Handles (Frames):', 'Weight': 0.3}),
+        ui.LineEdit({'ID': 'Handles', 'Text': '0', 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Topaz API Key:', 'Weight': 0.3}),
+        ui.LineEdit({'ID': 'APIKey', 'Text': engine.get_api_key() or 'YOUR_API_KEY', 'Weight': 0.7})
+    ]),
+    ui.Label({'Text': 'Status:', 'Weight': 0}),
+    ui.TextEdit({'ID': 'LogText', 'ReadOnly': True, 'Weight': 1}),
+    ui.HGroup({'Weight': 0}, [
+        ui.Button({'ID': 'ProcessCurrentBtn', 'Text': 'Process Current Clip', 'Weight': 1}),
+        ui.Button({'ID': 'ProcessBatchBtn', 'Text': 'Process Track Batch', 'Weight': 1})
+    ])
+]))
+
+itm = win.GetItems()
+
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+models = [
+    # --- Upscale / Enhancement ---
+    "prob-4 (Proteus v4)",
+    "pnat-1 (Proteus Natural v1)",
+    "ahq-12 (Artemis HQ v12)",
+    "alq-13 (Artemis LQ v13)",
+    "alqs-2 (Artemis LQ Dehalo v2)",
+    "amq-13 (Artemis MQ v13)",
+    "amqs-2 (Artemis MQ Dehalo v2)",
+    "aaa-9 (Artemis Aliased v9)",
+    "aaa-10 (Artemis Aliased v10)",
+    "aiob-1 (Artemis IO Balanced v1)",
+    "aion-1 (Artemis IO Natural v1)",
+    "color-1 (Color v1)",
+    "ddv-3 (Dione DV v3)",
+    "dtd-4 (Dione TV Detail v4)",
+    "dtds-2 (Dione TV Detail Strong v2)",
+    "dtv-4 (Dione TV v4)",
+    "dtvs-2 (Dione TV Strong v2)",
+    "gcg-5 (Gaia CG v5)",
+    "ghq-5 (Gaia HQ v5)",
+    "ganim-1 (Gaia Anime v1)",
+    "hyp-1 (Hyperion v1)",
+    "hyp-2 (Hyperion v2)",
+    "iris-2 (Iris v2)",
+    "iris-3 (Iris v3)",
+    "nxf-1 (Nyx Fine v1)",
+    "nxl-1 (Nyx Light v1)",
+    "nxhf-1 (Nyx HiFi v1)",
+    "nyx-3 (Nyx v3)",
+    "rhea-1 (Rhea v1)",
+    "thd-3 (Theia Detail v3)",
+    "thf-4 (Theia Fidelity v4)",
+    "thm-2 (Theia Medium v2)",
+    "wonder-1 (Wonder v1)",
+    # --- Starlight / Astra ---
+    "sl-1 (Starlight v1)",
+    "slc-1 (Starlight Creative v1)",
+    "slf-1 (Starlight Fast v1)",
+    "slf-2 (Starlight Fast v2)",
+    "slhq-1 (Starlight HQ v1)",
+    "slm-1 (Starlight Mini v1)",
+    "slp-2 (Starlight Precise v2)",
+    "slp-2.5 (Starlight Precise v2.5)",
+    # --- Utilities ---
+    "stab-1 (Stabilization v1)",
+    "remove-1 (Object Removal v1)",
+    # --- Frame Interpolation ---
+    "apo-8 (Apollo v8)",
+    "apf-2 (Apollo Fast v2)",
+    "chf-3 (Chronos Fast v3)",
+    "chr-2 (Chronos v2)",
+]
+for m in models:
+    itm['ModelCombo'].AddItem(m)
+
+resolutions = [
+    "1080p (1920x1080)",
+    "2K (2560x1440)",
+    "4K UHD (3840x2160)",
+    "4K DCI (4096x2160)",
+    "8K (7680x4320)",
+    "2x Source",
+    "4x Source"
+]
+for r in resolutions:
+    itm['ResCombo'].AddItem(r)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def log(msg):
+    current = itm['LogText'].PlainText
+    itm['LogText'].PlainText = current + msg + "\n"
+
+# Resolution presets: name -> (width, height) or None for scale-based
+RES_MAP = {
+    "1080p (1920x1080)": (1920, 1080),
+    "2K (2560x1440)": (2560, 1440),
+    "4K UHD (3840x2160)": (3840, 2160),
+    "4K DCI (4096x2160)": (4096, 2160),
+    "8K (7680x4320)": (7680, 4320),
+    "2x Source": None,
+    "4x Source": None,
+}
+
+def get_params():
+    sel = itm['ModelCombo'].CurrentText or models[0]
+    model_code = sel.split()[0]
+    res_text = itm['ResCombo'].CurrentText or "4K UHD (3840x2160)"
+    try:
+        handles = int(itm['Handles'].Text)
+    except:
+        handles = 0
+    api_key = itm['APIKey'].Text
+    if api_key and api_key != "YOUR_API_KEY":
+        engine.save_api_key(api_key)
+    return model_code, res_text, handles, api_key
+
+def get_output_resolution(res_text, src_w, src_h):
+    """Calculate output width and height from the resolution preset."""
+    preset = RES_MAP.get(res_text)
+    if preset is not None:
+        return preset
+    # Scale-based
+    if "4x" in res_text:
+        return (src_w * 4, src_h * 4)
+    else:
+        return (src_w * 2, src_h * 2)
+
+def process_single_clip(clip_data, model_code, res_text, handles, api_key):
+    """Process one clip with FFmpeg extraction. Runs SYNCHRONOUSLY."""
+    clip_path = clip_data['path']
+    clip_fps = clip_data['fps']
+    source_start = clip_data['left_offset']
+    source_duration = clip_data['duration']
+    timeline_start = clip_data['timeline_start']
+    track_idx = clip_data['track']
+
+    base_dir = os.path.dirname(clip_path)
+    base_name = os.path.splitext(os.path.basename(clip_path))[0]
+    src_ext = os.path.splitext(clip_path)[1].lower()
+    out_ext = ".mov" if src_ext == ".mov" else ".mp4"
+    extracted_path = os.path.join(base_dir, base_name + "_extracted.mp4")
+    output_path = os.path.join(base_dir, base_name + "_" + model_code + out_ext)
+
+    # 1. Extract the used portion with FFmpeg
+    log("Extracting used portion with FFmpeg...")
+    log("  Source start frame: %d, Duration: %d frames, Handles: %d" % (source_start, source_duration, handles))
+    engine.extract_clip(clip_path, extracted_path, source_start, source_duration, clip_fps, handles)
+    ext_size = os.path.getsize(extracted_path) / 1048576.0
+    log("  Extracted: %.1f MB" % ext_size)
+
+    # 2. Probe extracted clip and send to Topaz
+    w, h, frames, fps, dur, size = engine.probe_video(extracted_path)
+    log("  Extracted clip: %dx%d, %d frames, %.1f sec" % (w, h, frames, dur))
+
+    out_w, out_h = get_output_resolution(res_text, w, h)
+    log("Sending to Topaz API (%s, %dx%d -> %dx%d)..." % (model_code, w, h, out_w, out_h))
+    log("  Uploading and processing - UI will freeze until complete...")
+
+    req_id = engine.process_topaz_video(extracted_path, output_path, api_key, model_code, out_w=out_w, out_h=out_h)
+
+    log("Done! Request ID: %s" % req_id)
+    log("Output: %s" % output_path)
+
+    # 3. Import to Media Pool
+    imported = None
+    try:
+        imported = media_pool.ImportMedia([output_path])
+        log("Imported to Media Pool.")
+    except Exception:
+        log("Note: Please drag the output file into your Media Pool manually.")
+
+    # 4. Place on track above at same timeline position
+    if imported and timeline_start is not None and track_idx is not None:
+        try:
+            target_track = track_idx + 1
+            # Ensure the target track exists
+            track_count = timeline.GetTrackCount("video")
+            if target_track > track_count:
+                timeline.AddTrack("video")
+                log("Added new video track %d." % target_track)
+
+            media_pool.AppendToTimeline([{
+                "mediaPoolItem": imported[0],
+                "startFrame": 0,
+                "trackIndex": target_track,
+                "recordFrame": timeline_start
+            }])
+            log("Placed on Video Track %d at frame %d." % (target_track, timeline_start))
+        except Exception as e:
+            log("Note: Could not auto-place on timeline: %s" % str(e))
+            log("  The clip is in your Media Pool - drag it to the timeline manually.")
+
+    # 5. Cleanup extracted temp file
+    try:
+        if os.path.exists(extracted_path):
+            os.remove(extracted_path)
+    except Exception:
+        pass
+
+    return output_path
+
+# ---------------------------------------------------------------------------
+# Button handlers — SYNCHRONOUS (no threads)
+# ---------------------------------------------------------------------------
+def OnProcessCurrent(ev):
+    itm['LogText'].PlainText = ""
+    try:
+        if not timeline:
+            log("Error: No active timeline.")
+            return
+
+        current_clip = timeline.GetCurrentVideoItem()
+        if not current_clip:
+            log("Error: No clip under playhead.")
+            return
+
+        mp = current_clip.GetMediaPoolItem()
+        if not mp:
+            log("Error: Clip has no media file.")
+            return
+
+        clip_path = mp.GetClipProperty("File Path")
+        if not clip_path:
+            log("Error: Could not get file path.")
+            return
+
+        model_code, res_text, handles, api_key = get_params()
+
+        # Figure out what track this clip is on
+        clip_track = 1
+        track_count = timeline.GetTrackCount("video")
+        for t in range(1, track_count + 1):
+            items = timeline.GetItemListInTrack("video", t)
+            if items:
+                for item in items:
+                    if item.GetName() == current_clip.GetName() and item.GetStart() == current_clip.GetStart():
+                        clip_track = t
+                        break
+
+        clip_data = {
+            'name': current_clip.GetName(),
+            'path': clip_path,
+            'fps': float(mp.GetClipProperty("FPS")),
+            'left_offset': current_clip.GetLeftOffset(),
+            'duration': current_clip.GetDuration(),
+            'timeline_start': current_clip.GetStart(),
+            'track': clip_track
+        }
+
+        log("Processing: %s" % clip_data['name'])
+        log("  Source: %s" % clip_path)
+        process_single_clip(clip_data, model_code, res_text, handles, api_key)
+        log("\n=== COMPLETE ===")
+
+    except Exception as e:
+        import traceback
+        log("ERROR: " + str(e))
+        log(traceback.format_exc())
+
+def OnProcessBatch(ev):
+    itm['LogText'].PlainText = ""
+    try:
+        if not timeline:
+            log("Error: No active timeline.")
+            return
+
+        try:
+            track_idx = int(itm['TrackNum'].Text)
+        except:
+            log("Error: Track must be a number.")
+            return
+
+        clips = timeline.GetItemListInTrack("video", track_idx)
+        if not clips:
+            log("No clips on track %d." % track_idx)
+            return
+
+        model_code, res_text, handles, api_key = get_params()
+
+        log("Found %d clips on Track %d." % (len(clips), track_idx))
+        log("UI will freeze during processing. This is normal.\n")
+
+        for i, clip in enumerate(clips):
+            mp = clip.GetMediaPoolItem()
+            if not mp:
+                log("Skipping clip %d: no media pool item." % (i+1))
+                continue
+
+            clip_path = mp.GetClipProperty("File Path")
+            if not clip_path:
+                log("Skipping clip %d: no file path." % (i+1))
+                continue
+
+            clip_data = {
+                'name': clip.GetName(),
+                'path': clip_path,
+                'fps': float(mp.GetClipProperty("FPS")),
+                'left_offset': clip.GetLeftOffset(),
+                'duration': clip.GetDuration(),
+                'timeline_start': clip.GetStart(),
+                'track': track_idx
+            }
+
+            log("--- Clip %d/%d: %s ---" % (i+1, len(clips), clip.GetName()))
+            try:
+                process_single_clip(clip_data, model_code, res_text, handles, api_key)
+            except Exception as e:
+                log("ERROR on clip %d: %s" % (i+1, str(e)))
+
+        log("\n=== BATCH COMPLETE ===")
+
+    except Exception as e:
+        import traceback
+        log("ERROR: " + str(e))
+        log(traceback.format_exc())
+
+def OnClose(ev):
+    dispatcher.ExitLoop()
+
+# ---------------------------------------------------------------------------
+# Bind & run
+# ---------------------------------------------------------------------------
+win.On.ProcessBatchBtn.Clicked = OnProcessBatch
+win.On.ProcessCurrentBtn.Clicked = OnProcessCurrent
+win.On.TopazBatchWin.Close = OnClose
+
+win.Show()
+dispatcher.RunLoop()

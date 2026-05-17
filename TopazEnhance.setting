@@ -1,0 +1,108 @@
+{
+	Tools = ordered() {
+		TopazEnhancer = MacroOperator {
+			Inputs = ordered() {
+				Input1 = InstanceInput {
+					SourceOp = "CustomTool1",
+					Source = "Image1",
+				},
+				Input2 = InstanceInput {
+					SourceOp = "CustomTool1",
+					Source = "TopazModel",
+					Name = "Topaz Model",
+					Default = 0,
+				},
+				Input3 = InstanceInput {
+					SourceOp = "CustomTool1",
+					Source = "Handles",
+					Name = "Handles (Frames)",
+					Default = 12,
+				},
+				Input4 = InstanceInput {
+					SourceOp = "CustomTool1",
+					Source = "ProcessButton",
+					Name = "Send to Topaz API",
+				}
+			},
+			Outputs = {
+				MainOutput1 = InstanceOutput {
+					SourceOp = "CustomTool1",
+					Source = "Output",
+				}
+			},
+			ViewInfo = GroupInfo { Pos = { 0, 0 } },
+			Tools = ordered() {
+				CustomTool1 = Custom {
+					CtrlWZoom = false,
+					NameSet = true,
+					Inputs = {
+						TopazModel = Input { Value = 0, },
+						Handles = Input { Value = 12, },
+						ProcessButton = Input { Value = 0, },
+					},
+					ViewInfo = OperatorInfo { Pos = { 0, 0 } },
+					UserControls = ordered() {
+						TopazModel = {
+							INP_MaxAllowed = 2,
+							INP_Integer = true,
+							INPID_InputControl = "ComboControl",
+							INP_MaxScale = 2,
+							INP_Default = 0,
+							INP_MinScale = 0,
+							INP_MinAllowed = 0,
+							LINKID_DataType = "Number",
+							ICS_ControlPage = "Controls",
+							CC_Labels = {
+								"Proteus (prob-4)",
+								"Artemis HQ (ahq-12)",
+								"Gaia CG (gcg-5)"
+							},
+							LINKS_Name = "Topaz Model"
+						},
+						Handles = {
+							INP_MaxAllowed = 100,
+							INP_Integer = true,
+							INPID_InputControl = "SliderControl",
+							INP_MaxScale = 100,
+							INP_Default = 12,
+							INP_MinScale = 0,
+							INP_MinAllowed = 0,
+							LINKID_DataType = "Number",
+							ICS_ControlPage = "Controls",
+							LINKS_Name = "Handles (Frames)"
+						},
+						ProcessButton = {
+							INP_MaxAllowed = 1,
+							INP_Integer = true,
+							INPID_InputControl = "ButtonControl",
+							INP_MaxScale = 1,
+							INP_Default = 0,
+							INP_MinScale = 0,
+							INP_MinAllowed = 0,
+							LINKID_DataType = "Number",
+							ICS_ControlPage = "Controls",
+							LINKS_Name = "Send to Topaz API",
+							BTNCS_Execute = [[
+								-- Lua Script that triggers when button is pressed
+								local tool = comp.ActiveTool
+								local handles = tool.Handles[1]
+								local modelIdx = tool.TopazModel[1]
+								local models = {"prob-4", "ahq-12", "gcg-5"}
+								local selectedModel = models[modelIdx + 1]
+								
+								-- Get the path to our python engine
+								local enginePath = os.getenv("HOME") .. "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/topaz_resolve_engine.py"
+								
+								-- Call the python script asynchronously
+								local cmd = 'python3 "' .. enginePath .. '" --model ' .. selectedModel .. ' --handles ' .. handles .. ' &'
+								print("Executing: " .. cmd)
+								os.execute(cmd)
+							]]
+						}
+					}
+				}
+			},
+		}
+	},
+	ActiveTool = "TopazEnhancer"
+}
