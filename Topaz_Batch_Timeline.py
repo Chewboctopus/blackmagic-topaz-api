@@ -38,7 +38,7 @@ except NameError:
 win = dispatcher.AddWindow({
     'ID': "TopazBatchWin",
     'WindowTitle': "Topaz API Batch Processor",
-    'Geometry': [200, 100, 560, 780],
+    'Geometry': [100, 50, 700, 850],
 }, ui.VGroup([
     ui.HGroup({'Weight': 0}, [
         ui.Label({'Text': 'Select Video Track:', 'Weight': 0.3}),
@@ -48,7 +48,7 @@ win = dispatcher.AddWindow({
         ui.Label({'Text': 'Topaz Model:', 'Weight': 0.3}),
         ui.ComboBox({'ID': 'ModelCombo', 'Weight': 0.7})
     ]),
-    ui.TextEdit({'ID': 'ModelInfo', 'ReadOnly': True, 'Weight': 0, 'FixedSize': [0, 60], 'Font': ui.Font({'PixelSize': 11})}),
+    ui.TextEdit({'ID': 'ModelInfo', 'ReadOnly': True, 'Weight': 0.15}),
     ui.HGroup({'Weight': 0}, [
         ui.Label({'Text': 'Output Resolution:', 'Weight': 0.3}),
         ui.ComboBox({'ID': 'ResCombo', 'Weight': 0.7})
@@ -73,31 +73,35 @@ win = dispatcher.AddWindow({
         ui.ComboBox({'ID': 'Creativity', 'Weight': 0.7})
     ]),
     ui.HGroup({'Weight': 0}, [
-        ui.Label({'Text': 'Compression (-1 to 1):', 'Weight': 0.3}),
+        ui.Label({'Text': 'Prompt:', 'Weight': 0.3}),
+        ui.LineEdit({'ID': 'Prompt', 'PlaceholderText': '(for generative/removal models)', 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0, 'ID': 'CompressionRow'}, [
+        ui.Label({'ID': 'CompressionLabel', 'Text': 'Compression (-1 to 1):', 'Weight': 0.3}),
         ui.SpinBox({'ID': 'Compression', 'Value': 0, 'Minimum': -100, 'Maximum': 100, 'Weight': 0.7})
     ]),
-    ui.HGroup({'Weight': 0}, [
-        ui.Label({'Text': 'Details (-1 to 1):', 'Weight': 0.3}),
+    ui.HGroup({'Weight': 0, 'ID': 'DetailsRow'}, [
+        ui.Label({'ID': 'DetailsLabel', 'Text': 'Details (-1 to 1):', 'Weight': 0.3}),
         ui.SpinBox({'ID': 'Details', 'Value': 0, 'Minimum': -100, 'Maximum': 100, 'Weight': 0.7})
     ]),
-    ui.HGroup({'Weight': 0}, [
-        ui.Label({'Text': 'Noise (-1 to 1):', 'Weight': 0.3}),
+    ui.HGroup({'Weight': 0, 'ID': 'NoiseRow'}, [
+        ui.Label({'ID': 'NoiseLabel', 'Text': 'Noise (-1 to 1):', 'Weight': 0.3}),
         ui.SpinBox({'ID': 'Noise', 'Value': 0, 'Minimum': -100, 'Maximum': 100, 'Weight': 0.7})
     ]),
-    ui.HGroup({'Weight': 0}, [
-        ui.Label({'Text': 'Blur/Sharpen (-1 to 1):', 'Weight': 0.3}),
+    ui.HGroup({'Weight': 0, 'ID': 'BlurRow'}, [
+        ui.Label({'ID': 'BlurLabel', 'Text': 'Blur/Sharpen (-1 to 1):', 'Weight': 0.3}),
         ui.SpinBox({'ID': 'Blur', 'Value': 0, 'Minimum': -100, 'Maximum': 100, 'Weight': 0.7})
     ]),
-    ui.HGroup({'Weight': 0}, [
-        ui.Label({'Text': 'Halo (-1 to 1):', 'Weight': 0.3}),
+    ui.HGroup({'Weight': 0, 'ID': 'HaloRow'}, [
+        ui.Label({'ID': 'HaloLabel', 'Text': 'Halo (-1 to 1):', 'Weight': 0.3}),
         ui.SpinBox({'ID': 'Halo', 'Value': 0, 'Minimum': -100, 'Maximum': 100, 'Weight': 0.7})
     ]),
-    ui.HGroup({'Weight': 0}, [
-        ui.Label({'Text': 'Recover Original (0-1):', 'Weight': 0.3}),
+    ui.HGroup({'Weight': 0, 'ID': 'RecoverRow'}, [
+        ui.Label({'ID': 'RecoverLabel', 'Text': 'Recover Original (0-1):', 'Weight': 0.3}),
         ui.SpinBox({'ID': 'RecoverDetail', 'Value': 0, 'Minimum': 0, 'Maximum': 100, 'Weight': 0.7})
     ]),
-    ui.HGroup({'Weight': 0}, [
-        ui.Label({'Text': 'Grain Amount (0-0.1):', 'Weight': 0.3}),
+    ui.HGroup({'Weight': 0, 'ID': 'GrainRow'}, [
+        ui.Label({'ID': 'GrainLabel', 'Text': 'Grain Amount (0-0.1):', 'Weight': 0.3}),
         ui.SpinBox({'ID': 'Grain', 'Value': 0, 'Minimum': 0, 'Maximum': 100, 'Weight': 0.7})
     ]),
 
@@ -241,7 +245,48 @@ def update_model_info():
     info = MODEL_INFO.get(code, "No description available.")
     itm['ModelInfo'].PlainText = info
 
-# Show initial model info
+    # Determine capabilities for this model
+    caps = set()
+    # Upscale/enhancement models support manual tuning
+    upscale_models = {
+        "prob-4", "pnat-1",
+        "ahq-12", "alq-13", "alqs-2", "amq-13", "amqs-2",
+        "aaa-9", "aaa-10", "aiob-1", "aion-1",
+        "gcg-5", "ghq-5", "ganim-1",
+        "iris-2", "iris-3",
+        "nxf-1", "nxl-1", "nxhf-1", "nyx-3",
+        "rhea-1",
+        "thd-3", "thf-4", "thm-2",
+        "color-1",
+        "ddv-3", "dtd-4", "dtds-2", "dtv-4", "dtvs-2",
+        "sl-1", "slc-1", "slf-1", "slf-2", "slhq-1", "slm-1", "slp-2", "slp-2.5",
+        "hyp-1", "hyp-2", "wonder-1",
+    }
+    creative_models = {"slc-1", "hyp-1", "hyp-2", "wonder-1", "remove-1"}
+    prompt_models = {"remove-1", "wonder-1"}
+    interp_models = {"apo-8", "apf-2", "chf-3", "chr-2"}
+    utility_models = {"stab-1", "remove-1"}
+
+    if code in upscale_models:
+        caps.update(["mode", "compression", "details", "noise", "blur", "halo", "recover", "grain"])
+    if code in creative_models:
+        caps.add("creativity")
+    if code in prompt_models:
+        caps.add("prompt")
+
+    # Enable/disable controls based on capabilities
+    itm['AutoMode'].Enabled = "mode" in caps
+    itm['Creativity'].Enabled = "creativity" in caps
+    itm['Prompt'].Enabled = "prompt" in caps
+    itm['Compression'].Enabled = "compression" in caps
+    itm['Details'].Enabled = "details" in caps
+    itm['Noise'].Enabled = "noise" in caps
+    itm['Blur'].Enabled = "blur" in caps
+    itm['Halo'].Enabled = "halo" in caps
+    itm['RecoverDetail'].Enabled = "recover" in caps
+    itm['Grain'].Enabled = "grain" in caps
+
+# Show initial model info and set control states
 update_model_info()
 
 resolutions = [
@@ -302,6 +347,11 @@ def get_params():
         "auto_mode": auto_mode,
         "creativity": itm['Creativity'].CurrentText or "middle",
     }
+
+    # Include prompt if provided
+    prompt_text = itm['Prompt'].Text
+    if prompt_text and prompt_text.strip():
+        filter_params["prompt"] = prompt_text.strip()
 
     # Only include slider values if NOT in Auto mode
     if auto_mode != "Auto":

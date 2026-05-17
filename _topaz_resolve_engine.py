@@ -155,6 +155,11 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
     if creativity:
         upscale_filter["creativity"] = creativity
 
+    # Prompt for generative/removal models
+    prompt = filter_params.get("prompt")
+    if prompt:
+        upscale_filter["prompt"] = prompt
+
     payload = {
         "source": {
             "container": src_container,
