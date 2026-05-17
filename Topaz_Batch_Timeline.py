@@ -38,7 +38,7 @@ except NameError:
 win = dispatcher.AddWindow({
     'ID': "TopazBatchWin",
     'WindowTitle': "Topaz API Batch Processor",
-    'Geometry': [200, 200, 500, 500],
+    'Geometry': [200, 100, 560, 780],
 }, ui.VGroup([
     ui.HGroup({'Weight': 0}, [
         ui.Label({'Text': 'Select Video Track:', 'Weight': 0.3}),
@@ -60,6 +60,46 @@ win = dispatcher.AddWindow({
         ui.Label({'Text': 'Topaz API Key:', 'Weight': 0.3}),
         ui.LineEdit({'ID': 'APIKey', 'Text': engine.get_api_key() or 'YOUR_API_KEY', 'Weight': 0.7})
     ]),
+
+    # --- Filter Parameters ---
+    ui.Label({'Text': '── Filter Parameters ──', 'Weight': 0}),
+    ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Mode:', 'Weight': 0.3}),
+        ui.ComboBox({'ID': 'AutoMode', 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Creativity:', 'Weight': 0.3}),
+        ui.ComboBox({'ID': 'Creativity', 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Compression (-1 to 1):', 'Weight': 0.3}),
+        ui.SpinBox({'ID': 'Compression', 'Value': 0, 'Minimum': -100, 'Maximum': 100, 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Details (-1 to 1):', 'Weight': 0.3}),
+        ui.SpinBox({'ID': 'Details', 'Value': 0, 'Minimum': -100, 'Maximum': 100, 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Noise (-1 to 1):', 'Weight': 0.3}),
+        ui.SpinBox({'ID': 'Noise', 'Value': 0, 'Minimum': -100, 'Maximum': 100, 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Blur/Sharpen (-1 to 1):', 'Weight': 0.3}),
+        ui.SpinBox({'ID': 'Blur', 'Value': 0, 'Minimum': -100, 'Maximum': 100, 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Halo (-1 to 1):', 'Weight': 0.3}),
+        ui.SpinBox({'ID': 'Halo', 'Value': 0, 'Minimum': -100, 'Maximum': 100, 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Recover Original (0-1):', 'Weight': 0.3}),
+        ui.SpinBox({'ID': 'RecoverDetail', 'Value': 0, 'Minimum': 0, 'Maximum': 100, 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Grain Amount (0-0.1):', 'Weight': 0.3}),
+        ui.SpinBox({'ID': 'Grain', 'Value': 0, 'Minimum': 0, 'Maximum': 100, 'Weight': 0.7})
+    ]),
+
     ui.Label({'Text': 'Status:', 'Weight': 0}),
     ui.TextEdit({'ID': 'LogText', 'ReadOnly': True, 'Weight': 1}),
     ui.HGroup({'Weight': 0}, [
@@ -141,6 +181,13 @@ resolutions = [
 for r in resolutions:
     itm['ResCombo'].AddItem(r)
 
+# Populate filter parameter combos
+for mode in ["Auto", "Manual", "Relative"]:
+    itm['AutoMode'].AddItem(mode)
+for c in ["low", "middle", "high"]:
+    itm['Creativity'].AddItem(c)
+itm['Creativity'].CurrentIndex = 1  # default: middle
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -159,6 +206,9 @@ RES_MAP = {
     "4x Source": None,
 }
 
+# Models that support creativity parameter
+CREATIVE_MODELS = {"slc-1", "hyp-1", "hyp-2", "wonder-1"}
+
 def get_params():
     sel = itm['ModelCombo'].CurrentText or models[0]
     model_code = sel.split()[0]
@@ -170,7 +220,25 @@ def get_params():
     api_key = itm['APIKey'].Text
     if api_key and api_key != "YOUR_API_KEY":
         engine.save_api_key(api_key)
-    return model_code, res_text, handles, api_key
+
+    # Build filter params dict
+    auto_mode = itm['AutoMode'].CurrentText or "Auto"
+    filter_params = {
+        "auto_mode": auto_mode,
+        "creativity": itm['Creativity'].CurrentText or "middle",
+    }
+
+    # Only include slider values if NOT in Auto mode
+    if auto_mode != "Auto":
+        filter_params["compression"] = itm['Compression'].Value / 100.0
+        filter_params["details"] = itm['Details'].Value / 100.0
+        filter_params["noise"] = itm['Noise'].Value / 100.0
+        filter_params["blur"] = itm['Blur'].Value / 100.0
+        filter_params["halo"] = itm['Halo'].Value / 100.0
+        filter_params["recoverOriginalDetailValue"] = itm['RecoverDetail'].Value / 100.0
+        filter_params["grain"] = itm['Grain'].Value / 1000.0  # 0-100 -> 0-0.1
+
+    return model_code, res_text, handles, api_key, filter_params
 
 def get_output_resolution(res_text, src_w, src_h):
     """Calculate output width and height from the resolution preset."""
@@ -183,7 +251,7 @@ def get_output_resolution(res_text, src_w, src_h):
     else:
         return (src_w * 2, src_h * 2)
 
-def process_single_clip(clip_data, model_code, res_text, handles, api_key):
+def process_single_clip(clip_data, model_code, res_text, handles, api_key, filter_params):
     """Process one clip with FFmpeg extraction. Runs SYNCHRONOUSLY."""
     clip_path = clip_data['path']
     clip_fps = clip_data['fps']
@@ -214,7 +282,7 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key):
     log("Sending to Topaz API (%s, %dx%d -> %dx%d)..." % (model_code, w, h, out_w, out_h))
     log("  Uploading and processing - UI will freeze until complete...")
 
-    req_id = engine.process_topaz_video(extracted_path, output_path, api_key, model_code, out_w=out_w, out_h=out_h)
+    req_id = engine.process_topaz_video(extracted_path, output_path, api_key, model_code, out_w=out_w, out_h=out_h, filter_params=filter_params)
 
     log("Done! Request ID: %s" % req_id)
     log("Output: %s" % output_path)
@@ -282,7 +350,7 @@ def OnProcessCurrent(ev):
             log("Error: Could not get file path.")
             return
 
-        model_code, res_text, handles, api_key = get_params()
+        model_code, res_text, handles, api_key, filter_params = get_params()
 
         # Figure out what track this clip is on
         clip_track = 1
@@ -307,7 +375,7 @@ def OnProcessCurrent(ev):
 
         log("Processing: %s" % clip_data['name'])
         log("  Source: %s" % clip_path)
-        process_single_clip(clip_data, model_code, res_text, handles, api_key)
+        process_single_clip(clip_data, model_code, res_text, handles, api_key, filter_params)
         log("\n=== COMPLETE ===")
 
     except Exception as e:
@@ -333,7 +401,7 @@ def OnProcessBatch(ev):
             log("No clips on track %d." % track_idx)
             return
 
-        model_code, res_text, handles, api_key = get_params()
+        model_code, res_text, handles, api_key, filter_params = get_params()
 
         log("Found %d clips on Track %d." % (len(clips), track_idx))
         log("UI will freeze during processing. This is normal.\n")
@@ -361,7 +429,7 @@ def OnProcessBatch(ev):
 
             log("--- Clip %d/%d: %s ---" % (i+1, len(clips), clip.GetName()))
             try:
-                process_single_clip(clip_data, model_code, res_text, handles, api_key)
+                process_single_clip(clip_data, model_code, res_text, handles, api_key, filter_params)
             except Exception as e:
                 log("ERROR on clip %d: %s" % (i+1, str(e)))
 

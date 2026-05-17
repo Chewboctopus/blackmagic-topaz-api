@@ -107,8 +107,11 @@ def extract_clip(input_path, output_path, source_start_frame, source_duration_fr
     if result.returncode != 0:
         raise Exception("FFmpeg failed (code %d): %s" % (result.returncode, result.stderr[-300:]))
 
-def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None, out_h=None, container="mov"):
+def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None, out_h=None, container="mov", filter_params=None):
     """Submit to Topaz API, upload, poll, download. Returns request ID."""
+    if filter_params is None:
+        filter_params = {}
+
     width, height, nb_frames, fps, duration, file_size = probe_video(input_path)
 
     # Default to 2x if no output resolution specified
@@ -132,6 +135,26 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
         out_encoder = "h265"
         out_container = "mp4"
 
+    # Build filter object with model-specific parameters
+    upscale_filter = {
+        "model": model_code,
+        "videoType": "Progressive"
+    }
+
+    auto_mode = filter_params.get("auto_mode", "Auto")
+    if auto_mode != "Auto":
+        upscale_filter["auto"] = auto_mode
+        # Include manual/relative tuning parameters
+        for key in ("compression", "details", "noise", "blur", "halo",
+                     "recoverOriginalDetailValue", "grain"):
+            if key in filter_params:
+                upscale_filter[key] = filter_params[key]
+
+    # Creativity for generative models (slc, hyp, wonder, etc.)
+    creativity = filter_params.get("creativity")
+    if creativity:
+        upscale_filter["creativity"] = creativity
+
     payload = {
         "source": {
             "container": src_container,
@@ -141,7 +164,7 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
             "size": file_size,
             "resolution": {"width": width, "height": height}
         },
-        "filters": [{"model": model_code, "videoType": "Progressive"}],
+        "filters": [upscale_filter],
         "output": {
             "resolution": {"width": out_w, "height": out_h},
             "frameRate": fps,
