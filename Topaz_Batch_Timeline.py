@@ -155,7 +155,7 @@ models = [
     "wonder-1 (Wonder v1)",
     # --- Starlight / Astra ---
     "sl-1 (Starlight v1)",
-    "slc-1 (Starlight Creative v1)",
+    "slc-1 (Astra 1 / Starlight Creative v1)",
     "slf-1 (Starlight Fast v1)",
     "slf-2 (Starlight Fast v2)",
     "slhq-1 (Starlight HQ v1)",
@@ -191,7 +191,7 @@ try:
                     itm['ModelCombo'].AddItem(nc + " (New!)")
                 _new_model_notice = (
                     "New model(s) detected: %s\n"
-                    "Check https://www.topazlabs.com/api for details."
+                    "Check https://developer.topazlabs.com/ for details."
                 ) % ", ".join(sorted(_new_codes))
 except Exception:
     pass  # Don't block startup if API is unreachable
@@ -244,7 +244,7 @@ MODEL_INFO = {
     "wonder-1": "Wonder v1 — Generative enhancement. Creates new detail using AI generation. Supports: creativity.",
     # --- Starlight ---
     "sl-1": "Starlight v1 — Diffusion-based restoration for severely degraded/archival footage. Rebuilds missing detail.",
-    "slc-1": "Starlight Creative v1 — Generative Starlight with creative freedom. Supports: creativity (low/middle/high).",
+    "slc-1": "Astra 1 (slc-1) — Creative diffusion upscaling for GenAI video. Generates dynamic new texture and detail. Supports: creativity (low/middle/high).",
     "slf-1": "Starlight Fast v1 — Faster diffusion processing, good quality. For quicker turnaround.",
     "slf-2": "Starlight Fast v2 — Updated fast diffusion model.",
     "slhq-1": "Starlight HQ v1 — Highest quality diffusion restoration. Slower but best results.",
@@ -415,7 +415,11 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
     output_path = os.path.join(base_dir, base_name + "_" + model_code + out_ext)
 
     # 1. Extract the used portion with FFmpeg
+    clip_speed = clip_data.get('speed', 100.0)
     log("Extracting used portion with FFmpeg...")
+    if clip_speed != 100.0:
+        log("  Speed effect: %.0f%% (source frames: %d, timeline frames: %d)" % (
+            clip_speed, source_duration, int(round(source_duration / (clip_speed / 100.0)))))
     log("  Source start frame: %d, Duration: %d frames, Handles: %d" % (source_start, source_duration, handles))
     engine.extract_clip(clip_path, extracted_path, source_start, source_duration, clip_fps, handles)
     ext_size = os.path.getsize(extracted_path) / 1048576.0
@@ -510,14 +514,29 @@ def OnProcessCurrent(ev):
                         clip_track = t
                         break
 
+        # Get speed factor (100 = normal, 200 = 2x fast, 50 = half speed)
+        clip_speed = 100.0
+        try:
+            speed_val = current_clip.GetProperty("Speed")
+            if speed_val and float(speed_val) > 0:
+                clip_speed = float(speed_val)
+        except Exception:
+            pass
+
+        timeline_duration = current_clip.GetDuration()
+        # Source frames consumed = timeline frames * (speed / 100)
+        # e.g. 2x speed: 100 timeline frames use 200 source frames
+        source_duration = int(round(timeline_duration * (clip_speed / 100.0)))
+
         clip_data = {
             'name': current_clip.GetName(),
             'path': clip_path,
             'fps': float(mp.GetClipProperty("FPS")),
             'left_offset': current_clip.GetLeftOffset(),
-            'duration': current_clip.GetDuration(),
+            'duration': source_duration,
             'timeline_start': current_clip.GetStart(),
-            'track': clip_track
+            'track': clip_track,
+            'speed': clip_speed
         }
 
         log("Processing: %s" % clip_data['name'])
@@ -564,14 +583,27 @@ def OnProcessBatch(ev):
                 log("Skipping clip %d: no file path." % (i+1))
                 continue
 
+            # Get speed factor
+            clip_speed = 100.0
+            try:
+                speed_val = clip.GetProperty("Speed")
+                if speed_val and float(speed_val) > 0:
+                    clip_speed = float(speed_val)
+            except Exception:
+                pass
+
+            timeline_duration = clip.GetDuration()
+            source_duration = int(round(timeline_duration * (clip_speed / 100.0)))
+
             clip_data = {
                 'name': clip.GetName(),
                 'path': clip_path,
                 'fps': float(mp.GetClipProperty("FPS")),
                 'left_offset': clip.GetLeftOffset(),
-                'duration': clip.GetDuration(),
+                'duration': source_duration,
                 'timeline_start': clip.GetStart(),
-                'track': track_idx
+                'track': track_idx,
+                'speed': clip_speed
             }
 
             log("--- Clip %d/%d: %s ---" % (i+1, len(clips), clip.GetName()))
