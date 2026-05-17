@@ -48,6 +48,7 @@ win = dispatcher.AddWindow({
         ui.Label({'Text': 'Topaz Model:', 'Weight': 0.3}),
         ui.ComboBox({'ID': 'ModelCombo', 'Weight': 0.7})
     ]),
+    ui.TextEdit({'ID': 'ModelInfo', 'ReadOnly': True, 'Weight': 0, 'FixedSize': [0, 60], 'Font': ui.Font({'PixelSize': 11})}),
     ui.HGroup({'Weight': 0}, [
         ui.Label({'Text': 'Output Resolution:', 'Weight': 0.3}),
         ui.ComboBox({'ID': 'ResCombo', 'Weight': 0.7})
@@ -168,6 +169,80 @@ models = [
 ]
 for m in models:
     itm['ModelCombo'].AddItem(m)
+
+# Model descriptions and parameter support
+MODEL_INFO = {
+    # --- Proteus ---
+    "prob-4": "Proteus v4 — Versatile all-rounder with full manual controls. Best for low-to-medium quality footage. Supports: compression, details, noise, blur, halo, grain.",
+    "pnat-1": "Proteus Natural v1 — Natural-looking enhancement, less aggressive than standard Proteus. Good for organic footage.",
+    # --- Artemis ---
+    "ahq-12": "Artemis HQ v12 — Detail and sharpening for high-quality sources (Blu-ray, ProRes). Preserves existing quality.",
+    "alq-13": "Artemis LQ v13 — Restores low-quality, heavily compressed footage. Good for web video, old DVDs.",
+    "alqs-2": "Artemis LQ Dehalo v2 — Low-quality restoration with halo removal around edges.",
+    "amq-13": "Artemis MQ v13 — Balanced enhancement for medium-quality sources.",
+    "amqs-2": "Artemis MQ Dehalo v2 — Medium-quality with halo reduction.",
+    "aaa-9": "Artemis Aliased v9 — Removes aliasing/jagged edges from low-res footage.",
+    "aaa-10": "Artemis Aliased v10 — Updated anti-aliasing model.",
+    "aiob-1": "Artemis IO Balanced v1 — Balanced input/output enhancement.",
+    "aion-1": "Artemis IO Natural v1 — Natural-looking IO enhancement.",
+    # --- Color ---
+    "color-1": "Color v1 — Color correction and enhancement. Improves color accuracy and vibrancy.",
+    # --- Dione ---
+    "ddv-3": "Dione DV v3 — Specialized for DV/MiniDV camcorder footage deinterlacing and enhancement.",
+    "dtd-4": "Dione TV Detail v4 — Deinterlace interlaced TV content with detail preservation.",
+    "dtds-2": "Dione TV Detail Strong v2 — Aggressive deinterlacing with strong detail recovery.",
+    "dtv-4": "Dione TV v4 — General TV/broadcast deinterlacing.",
+    "dtvs-2": "Dione TV Strong v2 — Strong deinterlacing for challenging broadcast footage.",
+    # --- Gaia ---
+    "gcg-5": "Gaia CG v5 — Optimized for CGI, animation, and anime. Preserves clean lines and flat colors.",
+    "ghq-5": "Gaia HQ v5 — Natural upscaling for high-quality footage to 4K/8K. Preserves organic textures.",
+    "ganim-1": "Gaia Anime v1 — Specialized for anime content. Clean line work, vibrant colors.",
+    # --- Hyperion ---
+    "hyp-1": "Hyperion v1 — SDR to HDR conversion. Expands dynamic range and color gamut to HDR10. Supports: creativity.",
+    "hyp-2": "Hyperion v2 — Improved SDR to HDR. Better highlight recovery and shadow detail. Supports: creativity.",
+    # --- Iris ---
+    "iris-2": "Iris v2 — Face recovery and fine detail restoration. Great for portrait-heavy footage.",
+    "iris-3": "Iris v3 — Improved face and detail recovery. Best for degraded footage with people.",
+    # --- Nyx ---
+    "nxf-1": "Nyx Fine v1 — Fine-grained noise reduction. Preserves subtle details while cleaning noise.",
+    "nxl-1": "Nyx Light v1 — Light denoising for footage with mild noise.",
+    "nxhf-1": "Nyx HiFi v1 — High-fidelity denoising. Maximum detail preservation.",
+    "nyx-3": "Nyx v3 — General denoising for low-light, high-ISO, or grainy footage.",
+    # --- Rhea ---
+    "rhea-1": "Rhea v1 — Stabilization and enhancement model.",
+    # --- Theia ---
+    "thd-3": "Theia Detail v3 — Maximum detail and sharpness. Best for footage needing extra clarity.",
+    "thf-4": "Theia Fidelity v4 — Faithful enhancement preserving original character. Less aggressive than Detail.",
+    "thm-2": "Theia Medium v2 — Balanced between Detail and Fidelity.",
+    # --- Wonder ---
+    "wonder-1": "Wonder v1 — Generative enhancement. Creates new detail using AI generation. Supports: creativity.",
+    # --- Starlight ---
+    "sl-1": "Starlight v1 — Diffusion-based restoration for severely degraded/archival footage. Rebuilds missing detail.",
+    "slc-1": "Starlight Creative v1 — Generative Starlight with creative freedom. Supports: creativity (low/middle/high).",
+    "slf-1": "Starlight Fast v1 — Faster diffusion processing, good quality. For quicker turnaround.",
+    "slf-2": "Starlight Fast v2 — Updated fast diffusion model.",
+    "slhq-1": "Starlight HQ v1 — Highest quality diffusion restoration. Slower but best results.",
+    "slm-1": "Starlight Mini v1 — Lightweight Starlight for shorter clips or quick previews.",
+    "slp-2": "Starlight Precise v2 — Precise diffusion with high temporal consistency. Less hallucination.",
+    "slp-2.5": "Starlight Precise v2.5 — Updated precise model with improved consistency.",
+    # --- Utilities ---
+    "stab-1": "Stabilization v1 — Video stabilization. Reduces camera shake and jitter.",
+    "remove-1": "Object Removal v1 — AI-based object removal from video.",
+    # --- Frame Interpolation ---
+    "apo-8": "Apollo v8 — Frame interpolation for slow motion or FPS conversion. Smooth motion synthesis.",
+    "apf-2": "Apollo Fast v2 — Faster frame interpolation with good quality.",
+    "chf-3": "Chronos Fast v3 — Fast frame interpolation alternative to Apollo.",
+    "chr-2": "Chronos v2 — High quality frame interpolation.",
+}
+
+def update_model_info():
+    sel = itm['ModelCombo'].CurrentText or ""
+    code = sel.split()[0] if sel else ""
+    info = MODEL_INFO.get(code, "No description available.")
+    itm['ModelInfo'].PlainText = info
+
+# Show initial model info
+update_model_info()
 
 resolutions = [
     "1080p (1920x1080)",
@@ -449,6 +524,10 @@ def OnClose(ev):
 win.On.ProcessBatchBtn.Clicked = OnProcessBatch
 win.On.ProcessCurrentBtn.Clicked = OnProcessCurrent
 win.On.TopazBatchWin.Close = OnClose
+
+def OnModelChanged(ev):
+    update_model_info()
+win.On.ModelCombo.CurrentIndexChanged = OnModelChanged
 
 win.Show()
 dispatcher.RunLoop()
