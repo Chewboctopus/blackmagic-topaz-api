@@ -174,6 +174,28 @@ models = [
 for m in models:
     itm['ModelCombo'].AddItem(m)
 
+# Poll the live API for new models not in our hardcoded list
+_new_model_notice = ""
+try:
+    import requests as _req
+    _api_key = engine.get_api_key()
+    if _api_key:
+        _resp = _req.get("https://api.topazlabs.com/video/status",
+                         headers={"X-API-Key": _api_key}, timeout=5)
+        if _resp.status_code == 200:
+            _live_models = set(_resp.json().get("supportedModels", []))
+            _known_codes = set(m.split()[0] for m in models)
+            _new_codes = _live_models - _known_codes
+            if _new_codes:
+                for nc in sorted(_new_codes):
+                    itm['ModelCombo'].AddItem(nc + " (New!)")
+                _new_model_notice = (
+                    "New model(s) detected: %s\n"
+                    "Check https://www.topazlabs.com/api for details."
+                ) % ", ".join(sorted(_new_codes))
+except Exception:
+    pass  # Don't block startup if API is unreachable
+
 # Model descriptions and parameter support
 MODEL_INFO = {
     # --- Proteus ---
@@ -580,4 +602,6 @@ def OnModelChanged(ev):
 win.On.ModelCombo.CurrentIndexChanged = OnModelChanged
 
 win.Show()
+if _new_model_notice:
+    itm['LogText'].PlainText = _new_model_notice + "\n"
 dispatcher.RunLoop()
