@@ -151,7 +151,7 @@ models = [
     "rhea-1 (Rhea v1)",
     "thd-3 (Theia Detail v3)",
     "thf-4 (Theia Fidelity v4)",
-    "thm-2 (Theia Medium v2)",
+    "thm-2 (Themis Motion Deblur v2)",
     "wonder-1 (Wonder v1)",
     # --- Starlight / Astra ---
     "sl-1 (Starlight v1)",
@@ -239,7 +239,7 @@ MODEL_INFO = {
     # --- Theia ---
     "thd-3": "Theia Detail v3 — Maximum detail and sharpness. Best for footage needing extra clarity.",
     "thf-4": "Theia Fidelity v4 — Faithful enhancement preserving original character. Less aggressive than Detail.",
-    "thm-2": "Theia Medium v2 — Balanced between Detail and Fidelity.",
+    "thm-2": "Themis 2 (Motion Deblur) — Restores clarity to fast-moving footage by reducing motion blur. AI-powered deblur.",
     # --- Wonder ---
     "wonder-1": "Wonder v1 — Generative enhancement. Creates new detail using AI generation. Supports: creativity.",
     # --- Starlight ---
@@ -514,25 +514,48 @@ def OnProcessCurrent(ev):
                         clip_track = t
                         break
 
-        # Get speed factor (100 = normal, 200 = 2x fast, 50 = half speed)
-        clip_speed = 100.0
+        # Calculate source IN/OUT like an EDL would
+        # GetLeftOffset = frames from source start to clip in-point
+        # GetRightOffset = frames from clip out-point to source end
+        # Source duration = total_source_frames - left_offset - right_offset
+        left_offset = current_clip.GetLeftOffset()
+        right_offset = current_clip.GetRightOffset()
+        timeline_duration = current_clip.GetDuration()
+
+        # Get total source frame count from media pool item
+        total_source_frames = 0
         try:
-            speed_val = current_clip.GetProperty("Speed")
-            if speed_val and float(speed_val) > 0:
-                clip_speed = float(speed_val)
+            fc = mp.GetClipProperty("Frames")
+            if fc:
+                total_source_frames = int(fc)
         except Exception:
             pass
 
-        timeline_duration = current_clip.GetDuration()
-        # Source frames consumed = timeline frames * (speed / 100)
-        # e.g. 2x speed: 100 timeline frames use 200 source frames
-        source_duration = int(round(timeline_duration * (clip_speed / 100.0)))
+        if total_source_frames > 0:
+            source_duration = total_source_frames - left_offset - right_offset
+        else:
+            # Fallback: assume no speed effect
+            source_duration = timeline_duration
+
+        # Detect speed: if source duration != timeline duration, there's a speed effect
+        if timeline_duration > 0 and source_duration != timeline_duration:
+            clip_speed = (source_duration / float(timeline_duration)) * 100.0
+        else:
+            clip_speed = 100.0
+
+        # Log diagnostic info
+        log("  Diagnostics: left_offset=%d, right_offset=%d, total_src=%d" % (
+            left_offset, right_offset, total_source_frames))
+        log("  Source duration: %d frames, Timeline duration: %d frames" % (
+            source_duration, timeline_duration))
+        if clip_speed != 100.0:
+            log("  Speed effect detected: %.0f%%" % clip_speed)
 
         clip_data = {
             'name': current_clip.GetName(),
             'path': clip_path,
             'fps': float(mp.GetClipProperty("FPS")),
-            'left_offset': current_clip.GetLeftOffset(),
+            'left_offset': left_offset,
             'duration': source_duration,
             'timeline_start': current_clip.GetStart(),
             'track': clip_track,
@@ -583,23 +606,34 @@ def OnProcessBatch(ev):
                 log("Skipping clip %d: no file path." % (i+1))
                 continue
 
-            # Get speed factor
-            clip_speed = 100.0
+            # Calculate source IN/OUT like an EDL
+            left_offset = clip.GetLeftOffset()
+            right_offset = clip.GetRightOffset()
+            timeline_duration = clip.GetDuration()
+
+            total_source_frames = 0
             try:
-                speed_val = clip.GetProperty("Speed")
-                if speed_val and float(speed_val) > 0:
-                    clip_speed = float(speed_val)
+                fc = mp.GetClipProperty("Frames")
+                if fc:
+                    total_source_frames = int(fc)
             except Exception:
                 pass
 
-            timeline_duration = clip.GetDuration()
-            source_duration = int(round(timeline_duration * (clip_speed / 100.0)))
+            if total_source_frames > 0:
+                source_duration = total_source_frames - left_offset - right_offset
+            else:
+                source_duration = timeline_duration
+
+            if timeline_duration > 0 and source_duration != timeline_duration:
+                clip_speed = (source_duration / float(timeline_duration)) * 100.0
+            else:
+                clip_speed = 100.0
 
             clip_data = {
                 'name': clip.GetName(),
                 'path': clip_path,
                 'fps': float(mp.GetClipProperty("FPS")),
-                'left_offset': clip.GetLeftOffset(),
+                'left_offset': left_offset,
                 'duration': source_duration,
                 'timeline_start': clip.GetStart(),
                 'track': track_idx,
