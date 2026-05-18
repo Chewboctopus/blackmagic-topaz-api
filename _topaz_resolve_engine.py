@@ -64,6 +64,9 @@ def get_ffmpeg_path():
 def extract_clip(input_path, output_path, source_start_frame, source_duration_frames, fps, handles=0):
     """Extract a portion of the source clip using FFmpeg. Runs synchronously.
     
+    Uses frame-accurate re-encoding (not stream copy) to ensure precise
+    frame boundaries. This avoids corrupt output from GOP keyframe misalignment.
+    
     Args:
         source_start_frame: Frame offset from the start of the source media (GetLeftOffset)
         source_duration_frames: Number of source frames used by the clip
@@ -79,20 +82,18 @@ def extract_clip(input_path, output_path, source_start_frame, source_duration_fr
     start_sec = start_frame / float(fps)
     duration_sec = total_frames / float(fps)
 
-    # Use source file extension for the intermediate to keep same container
-    src_ext = os.path.splitext(input_path)[1].lower()
-    if not src_ext:
-        src_ext = ".mp4"
-    # Override output_path extension to match source
+    # Always output as mp4 for compatibility
     output_base = os.path.splitext(output_path)[0]
-    output_path = output_base + src_ext
+    output_path = output_base + ".mp4"
 
     cmd = [
         get_ffmpeg_path(), "-y", "-nostdin",
         "-ss", str(start_sec),
         "-i", input_path,
         "-t", str(duration_sec),
-        "-c", "copy",
+        "-c:v", "libx264", "-crf", "16", "-preset", "fast",
+        "-pix_fmt", "yuv420p",
+        "-an",  # no audio needed for Topaz
         output_path
     ]
 

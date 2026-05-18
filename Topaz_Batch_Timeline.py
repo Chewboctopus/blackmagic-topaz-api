@@ -335,9 +335,9 @@ for c in ["low", "middle", "high"]:
 itm['Creativity'].CurrentIndex = 1  # default: middle
 
 # Populate extraction mode combo
-itm['ExtractMode'].AddItem("Source Copy (FFmpeg) — fast, no effects")
-itm['ExtractMode'].AddItem("Timeline Render (Resolve) — bakes speed/reverse/grades")
-itm['ExtractMode'].CurrentIndex = 0  # default: FFmpeg
+itm['ExtractMode'].AddItem("Auto (trim or full source)")
+itm['ExtractMode'].AddItem("Full Source Extent (for re-applying speed/reverse)")
+itm['ExtractMode'].CurrentIndex = 0  # default: Auto
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -639,36 +639,39 @@ def OnProcessCurrent(ev):
             source_duration = timeline_duration
 
         # Detect speed from source vs timeline duration
-        if timeline_duration > 0 and source_duration != timeline_duration:
+        has_speed_effect = (source_duration != timeline_duration)
+        if has_speed_effect:
             clip_speed = (source_duration / float(timeline_duration)) * 100.0
         else:
             clip_speed = 100.0
 
         # Determine extraction mode
         extract_text = itm['ExtractMode'].CurrentText or ""
-        use_resolve_render = "Timeline Render" in extract_text
-
-        # Auto-detect speed/reverse: if source_duration != timeline_duration,
-        # FFmpeg cannot handle this correctly
-        has_speed_effect = (source_duration != timeline_duration)
-        if has_speed_effect and not use_resolve_render:
-            log("  *** Speed/reverse effect detected! (source=%d vs timeline=%d)" % (
-                source_duration, timeline_duration))
-            log("  *** FFmpeg cannot extract speed/reverse effects correctly.")
-            log("  ***")
-            log("  *** Options:")
-            log("  ***   1. Switch Extraction to 'Timeline Render' and re-run")
-            log("  ***   2. Right-click the clip > 'Render in Place' first,")
-            log("  ***      then run Topaz on the rendered flat clip")
-            log("  ***")
-            log("  *** Aborting to prevent incorrect extraction.")
-            return
+        force_full_extent = "Full Source" in extract_text
 
         log("  Source: left=%d, right=%d, total=%d -> source_duration=%d (timeline=%d)" % (
             left_offset, right_offset, total_source_frames, source_duration, timeline_duration))
-        if clip_speed != 100.0:
-            log("  Speed effect: %.0f%%" % clip_speed)
-        log("  Extraction: %s" % ("Resolve Render" if use_resolve_render else "FFmpeg"))
+
+        if has_speed_effect:
+            log("  Speed/reverse effect detected: %.0f%%" % clip_speed)
+
+            if force_full_extent:
+                # User chose to extract all source frames — they'll re-apply speed/reverse
+                log("  Mode: Full Source Extent — extracting all %d source frames" % source_duration)
+                log("  (Re-apply speed/reverse to enhanced clip after Topaz processing)")
+            else:
+                # Auto mode: abort with instructions
+                log("")
+                log("  *** Speed/reverse detected — cannot extract with correct timing.")
+                log("  *** Choose one:")
+                log("  ***   1. Right-click clip > 'Render in Place' first, then re-run")
+                log("  ***   2. Switch Extraction to 'Full Source Extent' to get all")
+                log("  ***      source frames, then re-apply speed/reverse to the result")
+                log("")
+                log("  Aborted.")
+                return
+        else:
+            log("  Straight cut — extracting with FFmpeg")
 
         clip_data = {
             'name': current_clip.GetName(),
@@ -681,7 +684,7 @@ def OnProcessCurrent(ev):
             'timeline_end': timeline_end_frame,
             'track': clip_track,
             'speed': clip_speed,
-            'use_resolve_render': use_resolve_render
+            'use_resolve_render': False
         }
 
         log("Processing: %s" % clip_data['name'])
@@ -753,11 +756,11 @@ def OnProcessBatch(ev):
 
             # Determine extraction mode
             extract_text = itm['ExtractMode'].CurrentText or ""
-            use_resolve_render = "Timeline Render" in extract_text
+            force_full_extent = "Full Source" in extract_text
 
-            # Auto-detect speed/reverse — skip in FFmpeg mode
-            if source_duration != timeline_duration and not use_resolve_render:
-                log("  *** Skipping: speed/reverse effect detected. Use Timeline Render mode.")
+            # Skip speed/reverse clips in Auto mode
+            if source_duration != timeline_duration and not force_full_extent:
+                log("  *** Skipping: speed/reverse detected. Use 'Full Source Extent' or Render in Place.")
                 continue
 
             clip_data = {
@@ -771,7 +774,7 @@ def OnProcessBatch(ev):
                 'timeline_end': clip.GetEnd(),
                 'track': track_idx,
                 'speed': clip_speed,
-                'use_resolve_render': use_resolve_render
+                'use_resolve_render': False
             }
 
             log("--- Clip %d/%d: %s ---" % (i+1, len(clips), clip.GetName()))
