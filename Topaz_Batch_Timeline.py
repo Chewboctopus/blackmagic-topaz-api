@@ -500,6 +500,13 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
     extracted_path = os.path.join(base_dir, base_name + "_extracted.mp4")
     output_path = os.path.join(base_dir, base_name + "_" + model_code + out_ext)
 
+    # Auto-bump handles if extraction will be less than 10 frames (API minimum)
+    total_extracted = source_duration + (handles * 2)
+    if total_extracted < 10:
+        extra_needed = 10 - total_extracted
+        handles += (extra_needed + 1) // 2
+        log("  *** Auto-increasing handles to %d to meet Topaz 10-frame minimum" % handles)
+
     if use_resolve_render:
         # --- Timeline Render mode: bakes all effects ---
         log("Rendering via Resolve Deliver page...")
