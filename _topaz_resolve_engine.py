@@ -217,10 +217,11 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
     # 3. Poll for completion with progress updates
     status_url = "https://api.topazlabs.com/video/%s/status" % request_id
     poll_count = 0
-    max_polls = 360  # 30 minutes at 5-second intervals
     last_progress = -1
+    last_progress_poll = 0  # poll_count when progress last changed
+    stall_limit = 120  # 10 minutes with no progress change = stalled
 
-    while poll_count < max_polls:
+    while True:
         time.sleep(5)
         poll_count += 1
         try:
@@ -236,6 +237,8 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
 
             # Log progress updates (only when progress changes)
             if progress != last_progress:
+                last_progress = progress
+                last_progress_poll = poll_count
                 elapsed_min = (poll_count * 5) / 60.0
                 msg = "  Processing: %d%%" % progress
                 if time_est and len(time_est) >= 2:
@@ -246,19 +249,24 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
                         msg += " (est. %d sec remaining)" % remaining_sec
                 msg += " [%.1f min elapsed]" % elapsed_min
                 _log(msg)
-                last_progress = progress
 
             if status == "complete":
                 download_url = s_data.get("download", {}).get("url")
-                _log("  Processing complete!")
+                elapsed_min = (poll_count * 5) / 60.0
+                _log("  Processing complete! [%.1f min total]" % elapsed_min)
                 break
             elif status in ("failed", "canceled"):
-                # Capture full error details
                 error_msg = s_data.get("error", s_data.get("message", ""))
                 raise Exception("Topaz processing %s: %s\nFull response: %s" % (
                     status, error_msg, json.dumps(s_data, indent=2)))
-    else:
-        raise Exception("Timeout: processing exceeded 30 minutes. Request ID: %s" % request_id)
+
+            # Stall detection: if progress hasn't changed in 10 minutes, abort
+            stall_duration = (poll_count - last_progress_poll) * 5
+            if stall_duration >= stall_limit * 5:
+                raise Exception(
+                    "Stalled: no progress for 10 minutes (stuck at %d%%). "
+                    "Request ID: %s" % (last_progress, request_id)
+                )
 
     # 4. Download
     if not download_url:
