@@ -58,6 +58,10 @@ win = dispatcher.AddWindow({
         ui.LineEdit({'ID': 'Handles', 'Text': '0', 'Weight': 0.7})
     ]),
     ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Extraction:', 'Weight': 0.3}),
+        ui.ComboBox({'ID': 'ExtractMode', 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
         ui.Label({'Text': 'Topaz API Key:', 'Weight': 0.3}),
         ui.LineEdit({'ID': 'APIKey', 'Text': engine.get_api_key() or 'YOUR_API_KEY', 'Weight': 0.7})
     ]),
@@ -330,6 +334,11 @@ for c in ["low", "middle", "high"]:
     itm['Creativity'].AddItem(c)
 itm['Creativity'].CurrentIndex = 1  # default: middle
 
+# Populate extraction mode combo
+itm['ExtractMode'].AddItem("Source Copy (FFmpeg) — fast, no effects")
+itm['ExtractMode'].AddItem("Timeline Render (Resolve) — bakes speed/reverse/grades")
+itm['ExtractMode'].CurrentIndex = 0  # default: FFmpeg
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -398,14 +407,91 @@ def get_output_resolution(res_text, src_w, src_h):
     else:
         return (src_w * 2, src_h * 2)
 
+def render_clip_via_resolve(clip_data, output_path):
+    """Render a clip range via Resolve's Deliver page. Bakes ALL timeline effects."""
+    timeline_start = clip_data['timeline_start']
+    timeline_end = clip_data['timeline_end']
+    clip_fps = clip_data['fps']
+
+    project = resolve.GetProjectManager().GetCurrentProject()
+
+    # Save current page
+    prev_page = resolve.GetCurrentPage()
+
+    # Set render settings: DNxHR HQ in MXF for quality, or QuickTime ProRes
+    render_settings = {
+        "SelectAllFrames": False,
+        "MarkIn": timeline_start,
+        "MarkOut": timeline_end - 1,  # Resolve uses inclusive end
+        "TargetDir": os.path.dirname(output_path),
+        "CustomName": os.path.splitext(os.path.basename(output_path))[0],
+        "FormatWidth": 0,   # 0 = same as timeline
+        "FormatHeight": 0,
+        "ExportVideo": True,
+        "ExportAudio": False,
+    }
+
+    # Try QuickTime/ProRes first, fall back to mp4
+    src_ext = os.path.splitext(clip_data['path'])[1].lower()
+    if src_ext == ".mov":
+        render_settings["VideoFormat"] = "QuickTime"
+        render_settings["VideoCodec"] = "Apple ProRes 422 HQ"
+    else:
+        render_settings["VideoFormat"] = "mp4"
+        render_settings["VideoCodec"] = "H.265"
+
+    project.SetRenderSettings(render_settings)
+    job_id = project.AddRenderJob()
+    if not job_id:
+        raise Exception("Failed to add render job. Check Deliver page settings.")
+
+    project.StartRendering(job_id)
+
+    # Poll for completion
+    import time
+    while project.IsRenderingInProgress():
+        time.sleep(1)
+
+    # Check result
+    job_info = project.GetRenderJobStatus(job_id)
+    status = job_info.get("JobStatus", "Unknown") if job_info else "Unknown"
+    if status != "Complete":
+        raise Exception("Render failed with status: %s" % status)
+
+    # Find the rendered file
+    rendered_file = job_info.get("OutputFilename", "")
+    if not rendered_file or not os.path.exists(rendered_file):
+        # Try to find it by the custom name
+        target_dir = os.path.dirname(output_path)
+        custom_name = os.path.splitext(os.path.basename(output_path))[0]
+        for f in os.listdir(target_dir):
+            if f.startswith(custom_name) and not f.endswith("_extracted.mp4"):
+                rendered_file = os.path.join(target_dir, f)
+                break
+
+    # Restore previous page
+    try:
+        resolve.OpenPage(prev_page)
+    except Exception:
+        pass
+
+    # Delete the render job to clean up
+    try:
+        project.DeleteRenderJob(job_id)
+    except Exception:
+        pass
+
+    return rendered_file
+
 def process_single_clip(clip_data, model_code, res_text, handles, api_key, filter_params):
-    """Process one clip with FFmpeg extraction. Runs SYNCHRONOUSLY."""
+    """Process one clip. Runs SYNCHRONOUSLY."""
     clip_path = clip_data['path']
     clip_fps = clip_data['fps']
     source_start = clip_data['left_offset']
     source_duration = clip_data['duration']
     timeline_start = clip_data['timeline_start']
     track_idx = clip_data['track']
+    use_resolve_render = clip_data.get('use_resolve_render', False)
 
     base_dir = os.path.dirname(clip_path)
     base_name = os.path.splitext(os.path.basename(clip_path))[0]
@@ -414,20 +500,29 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
     extracted_path = os.path.join(base_dir, base_name + "_extracted.mp4")
     output_path = os.path.join(base_dir, base_name + "_" + model_code + out_ext)
 
-    # 1. Extract the used portion with FFmpeg
-    clip_speed = clip_data.get('speed', 100.0)
-    log("Extracting used portion with FFmpeg...")
-    if clip_speed != 100.0:
-        log("  Speed effect: %.0f%% (source frames: %d, timeline frames: %d)" % (
-            clip_speed, source_duration, int(round(source_duration / (clip_speed / 100.0)))))
-    log("  Source start frame: %d, Duration: %d frames, Handles: %d" % (source_start, source_duration, handles))
-    engine.extract_clip(clip_path, extracted_path, source_start, source_duration, clip_fps, handles)
-    ext_size = os.path.getsize(extracted_path) / 1048576.0
-    log("  Extracted: %.1f MB" % ext_size)
+    if use_resolve_render:
+        # --- Timeline Render mode: bakes all effects ---
+        log("Rendering via Resolve Deliver page...")
+        log("  Timeline range: %d - %d (%d frames)" % (
+            timeline_start, clip_data['timeline_end'], clip_data['timeline_end'] - timeline_start))
+        rendered_path = render_clip_via_resolve(clip_data, extracted_path)
+        if not rendered_path or not os.path.exists(rendered_path):
+            raise Exception("Resolve render produced no output file")
+        extracted_path = rendered_path
+        ext_size = os.path.getsize(extracted_path) / 1048576.0
+        log("  Rendered: %.1f MB" % ext_size)
+    else:
+        # --- FFmpeg source copy mode: fast, no effects ---
+        log("Extracting source frames with FFmpeg...")
+        log("  Source start frame: %d, Duration: %d frames, Handles: %d" % (
+            source_start, source_duration, handles))
+        engine.extract_clip(clip_path, extracted_path, source_start, source_duration, clip_fps, handles)
+        ext_size = os.path.getsize(extracted_path) / 1048576.0
+        log("  Extracted: %.1f MB" % ext_size)
 
     # 2. Probe extracted clip and send to Topaz
     w, h, frames, fps, dur, size = engine.probe_video(extracted_path)
-    log("  Extracted clip: %dx%d, %d frames, %.1f sec" % (w, h, frames, dur))
+    log("  Clip to process: %dx%d, %d frames, %.1f sec" % (w, h, frames, dur))
 
     out_w, out_h = get_output_resolution(res_text, w, h)
     log("Sending to Topaz API (%s, %dx%d -> %dx%d)..." % (model_code, w, h, out_w, out_h))
@@ -514,15 +609,14 @@ def OnProcessCurrent(ev):
                         clip_track = t
                         break
 
-        # Calculate source IN/OUT like an EDL would
-        # GetLeftOffset = frames from source start to clip in-point
-        # GetRightOffset = frames from clip out-point to source end
-        # Source duration = total_source_frames - left_offset - right_offset
+        # ---- Determine source frames to extract ----
         left_offset = current_clip.GetLeftOffset()
         right_offset = current_clip.GetRightOffset()
         timeline_duration = current_clip.GetDuration()
+        timeline_start_frame = current_clip.GetStart()
+        timeline_end_frame = current_clip.GetEnd()
 
-        # Get total source frame count from media pool item
+        # Get total source frame count
         total_source_frames = 0
         try:
             fc = mp.GetClipProperty("Frames")
@@ -531,25 +625,29 @@ def OnProcessCurrent(ev):
         except Exception:
             pass
 
+        # EDL-style source math:
+        # source_duration = total_source_frames - left_offset - right_offset
+        # This gives us ALL source frames between IN and OUT, regardless of speed
         if total_source_frames > 0:
             source_duration = total_source_frames - left_offset - right_offset
         else:
-            # Fallback: assume no speed effect
             source_duration = timeline_duration
 
-        # Detect speed: if source duration != timeline duration, there's a speed effect
+        # Detect speed from source vs timeline duration
         if timeline_duration > 0 and source_duration != timeline_duration:
             clip_speed = (source_duration / float(timeline_duration)) * 100.0
         else:
             clip_speed = 100.0
 
-        # Log diagnostic info
-        log("  Diagnostics: left_offset=%d, right_offset=%d, total_src=%d" % (
-            left_offset, right_offset, total_source_frames))
-        log("  Source duration: %d frames, Timeline duration: %d frames" % (
-            source_duration, timeline_duration))
+        # Determine extraction mode
+        extract_text = itm['ExtractMode'].CurrentText or ""
+        use_resolve_render = "Timeline Render" in extract_text
+
+        log("  Source: left=%d, right=%d, total=%d -> source_duration=%d (timeline=%d)" % (
+            left_offset, right_offset, total_source_frames, source_duration, timeline_duration))
         if clip_speed != 100.0:
-            log("  Speed effect detected: %.0f%%" % clip_speed)
+            log("  Speed effect: %.0f%%" % clip_speed)
+        log("  Extraction: %s" % ("Resolve Render" if use_resolve_render else "FFmpeg"))
 
         clip_data = {
             'name': current_clip.GetName(),
@@ -557,9 +655,11 @@ def OnProcessCurrent(ev):
             'fps': float(mp.GetClipProperty("FPS")),
             'left_offset': left_offset,
             'duration': source_duration,
-            'timeline_start': current_clip.GetStart(),
+            'timeline_start': timeline_start_frame,
+            'timeline_end': timeline_end_frame,
             'track': clip_track,
-            'speed': clip_speed
+            'speed': clip_speed,
+            'use_resolve_render': use_resolve_render
         }
 
         log("Processing: %s" % clip_data['name'])
@@ -629,6 +729,10 @@ def OnProcessBatch(ev):
             else:
                 clip_speed = 100.0
 
+            # Determine extraction mode
+            extract_text = itm['ExtractMode'].CurrentText or ""
+            use_resolve_render = "Timeline Render" in extract_text
+
             clip_data = {
                 'name': clip.GetName(),
                 'path': clip_path,
@@ -636,8 +740,10 @@ def OnProcessBatch(ev):
                 'left_offset': left_offset,
                 'duration': source_duration,
                 'timeline_start': clip.GetStart(),
+                'timeline_end': clip.GetEnd(),
                 'track': track_idx,
-                'speed': clip_speed
+                'speed': clip_speed,
+                'use_resolve_render': use_resolve_render
             }
 
             log("--- Clip %d/%d: %s ---" % (i+1, len(clips), clip.GetName()))
