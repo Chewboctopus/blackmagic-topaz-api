@@ -643,6 +643,15 @@ def OnProcessCurrent(ev):
         extract_text = itm['ExtractMode'].CurrentText or ""
         use_resolve_render = "Timeline Render" in extract_text
 
+        # Auto-detect speed/reverse: if source_duration != timeline_duration,
+        # FFmpeg cannot handle this — force Timeline Render
+        has_speed_effect = (source_duration != timeline_duration)
+        if has_speed_effect and not use_resolve_render:
+            log("  *** Speed/reverse effect detected (source=%d vs timeline=%d)" % (
+                source_duration, timeline_duration))
+            log("  *** Auto-switching to Timeline Render (FFmpeg cannot handle speed/reverse)")
+            use_resolve_render = True
+
         log("  Source: left=%d, right=%d, total=%d -> source_duration=%d (timeline=%d)" % (
             left_offset, right_offset, total_source_frames, source_duration, timeline_duration))
         if clip_speed != 100.0:
@@ -732,6 +741,10 @@ def OnProcessBatch(ev):
             # Determine extraction mode
             extract_text = itm['ExtractMode'].CurrentText or ""
             use_resolve_render = "Timeline Render" in extract_text
+
+            # Auto-detect speed/reverse
+            if source_duration != timeline_duration and not use_resolve_render:
+                use_resolve_render = True
 
             clip_data = {
                 'name': clip.GetName(),
