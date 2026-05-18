@@ -511,6 +511,11 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
         extracted_path = rendered_path
         ext_size = os.path.getsize(extracted_path) / 1048576.0
         log("  Rendered: %.1f MB" % ext_size)
+    elif source_start == 0 and handles == 0 and source_duration == clip_data.get('total_source_frames', 0):
+        # Full source file — skip extraction, send directly to Topaz
+        # This is common after Render in Place (the clip IS the file)
+        log("Using source file directly (no trimming needed).")
+        extracted_path = clip_path
     else:
         # --- FFmpeg source copy mode: fast, no effects ---
         log("Extracting source frames with FFmpeg...")
@@ -562,9 +567,9 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
             log("Note: Could not auto-place on timeline: %s" % str(e))
             log("  The clip is in your Media Pool - drag it to the timeline manually.")
 
-    # 5. Cleanup extracted temp file
+    # 5. Cleanup extracted temp file (but NOT the source file)
     try:
-        if os.path.exists(extracted_path):
+        if extracted_path != clip_path and os.path.exists(extracted_path):
             os.remove(extracted_path)
     except Exception:
         pass
@@ -671,6 +676,7 @@ def OnProcessCurrent(ev):
             'fps': float(mp.GetClipProperty("FPS")),
             'left_offset': left_offset,
             'duration': source_duration,
+            'total_source_frames': total_source_frames,
             'timeline_start': timeline_start_frame,
             'timeline_end': timeline_end_frame,
             'track': clip_track,
@@ -760,6 +766,7 @@ def OnProcessBatch(ev):
                 'fps': float(mp.GetClipProperty("FPS")),
                 'left_offset': left_offset,
                 'duration': source_duration,
+                'total_source_frames': total_source_frames,
                 'timeline_start': clip.GetStart(),
                 'timeline_end': clip.GetEnd(),
                 'track': track_idx,
