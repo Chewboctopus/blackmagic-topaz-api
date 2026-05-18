@@ -531,9 +531,8 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
 
     out_w, out_h = get_output_resolution(res_text, w, h)
     log("Sending to Topaz API (%s, %dx%d -> %dx%d)..." % (model_code, w, h, out_w, out_h))
-    log("  Uploading and processing - UI will freeze until complete...")
 
-    req_id = engine.process_topaz_video(extracted_path, output_path, api_key, model_code, out_w=out_w, out_h=out_h, filter_params=filter_params)
+    req_id = engine.process_topaz_video(extracted_path, output_path, api_key, model_code, out_w=out_w, out_h=out_h, filter_params=filter_params, progress_callback=log)
 
     log("Done! Request ID: %s" % req_id)
     log("Output: %s" % output_path)

@@ -108,10 +108,18 @@ def extract_clip(input_path, output_path, source_start_frame, source_duration_fr
     if result.returncode != 0:
         raise Exception("FFmpeg failed (code %d): %s" % (result.returncode, result.stderr[-300:]))
 
-def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None, out_h=None, container="mov", filter_params=None):
-    """Submit to Topaz API, upload, poll, download. Returns request ID."""
+def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None, out_h=None, container="mov", filter_params=None, progress_callback=None):
+    """Submit to Topaz API, upload, poll, download. Returns request ID.
+    
+    Args:
+        progress_callback: Optional function(msg) called with status updates during polling.
+    """
     if filter_params is None:
         filter_params = {}
+
+    def _log(msg):
+        if progress_callback:
+            progress_callback(msg)
 
     width, height, nb_frames, fps, duration, file_size = probe_video(input_path)
 
@@ -187,6 +195,7 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
     }
 
     # 1. Create request
+    _log("  Creating Topaz API request...")
     resp = requests.post("https://api.topazlabs.com/video/express", headers=headers, json=payload)
     if resp.status_code != 200:
         raise Exception("Topaz API error %d: %s" % (resp.status_code, resp.text[:200]))
@@ -194,17 +203,26 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
     req_data = resp.json()
     request_id = req_data["requestId"]
     upload_url = req_data["uploadUrls"][0]
+    _log("  Request ID: %s" % request_id)
 
     # 2. Upload
+    file_mb = os.path.getsize(input_path) / 1048576.0
+    _log("  Uploading %.1f MB..." % file_mb)
     with open(input_path, "rb") as f:
         upload_resp = requests.put(upload_url, data=f, headers={"Content-Type": "video/%s" % src_container})
         if upload_resp.status_code not in (200, 201):
             raise Exception("Upload failed: %d" % upload_resp.status_code)
+    _log("  Upload complete. Processing...")
 
-    # 3. Poll for completion
+    # 3. Poll for completion with progress updates
     status_url = "https://api.topazlabs.com/video/%s/status" % request_id
-    while True:
+    poll_count = 0
+    max_polls = 360  # 30 minutes at 5-second intervals
+    last_progress = -1
+
+    while poll_count < max_polls:
         time.sleep(5)
+        poll_count += 1
         try:
             s_resp = requests.get(status_url, headers={"X-API-Key": api_key})
         except Exception:
@@ -212,21 +230,47 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
         if s_resp.status_code == 200:
             s_data = s_resp.json()
             status = s_data.get("status")
+            progress = s_data.get("progress", 0)
+            estimates = s_data.get("estimates", {})
+            time_est = estimates.get("time", [])
+
+            # Log progress updates (only when progress changes)
+            if progress != last_progress:
+                elapsed_min = (poll_count * 5) / 60.0
+                msg = "  Processing: %d%%" % progress
+                if time_est and len(time_est) >= 2:
+                    remaining_sec = time_est[1] - (poll_count * 5)
+                    if remaining_sec > 60:
+                        msg += " (est. %.0f min remaining)" % (remaining_sec / 60.0)
+                    elif remaining_sec > 0:
+                        msg += " (est. %d sec remaining)" % remaining_sec
+                msg += " [%.1f min elapsed]" % elapsed_min
+                _log(msg)
+                last_progress = progress
+
             if status == "complete":
                 download_url = s_data.get("download", {}).get("url")
+                _log("  Processing complete!")
                 break
             elif status in ("failed", "canceled"):
                 # Capture full error details
                 error_msg = s_data.get("error", s_data.get("message", ""))
                 raise Exception("Topaz processing %s: %s\nFull response: %s" % (
                     status, error_msg, json.dumps(s_data, indent=2)))
+    else:
+        raise Exception("Timeout: processing exceeded 30 minutes. Request ID: %s" % request_id)
 
     # 4. Download
     if not download_url:
         raise Exception("No download URL returned")
+    _log("  Downloading result...")
     d_resp = requests.get(download_url, stream=True)
+    downloaded = 0
     with open(output_path, "wb") as f:
         for chunk in d_resp.iter_content(chunk_size=65536):
             f.write(chunk)
+            downloaded += len(chunk)
+    dl_mb = downloaded / 1048576.0
+    _log("  Downloaded: %.1f MB" % dl_mb)
 
     return request_id
