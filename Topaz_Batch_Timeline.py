@@ -644,13 +644,20 @@ def OnProcessCurrent(ev):
         use_resolve_render = "Timeline Render" in extract_text
 
         # Auto-detect speed/reverse: if source_duration != timeline_duration,
-        # FFmpeg cannot handle this — force Timeline Render
+        # FFmpeg cannot handle this correctly
         has_speed_effect = (source_duration != timeline_duration)
         if has_speed_effect and not use_resolve_render:
-            log("  *** Speed/reverse effect detected (source=%d vs timeline=%d)" % (
+            log("  *** Speed/reverse effect detected! (source=%d vs timeline=%d)" % (
                 source_duration, timeline_duration))
-            log("  *** Auto-switching to Timeline Render (FFmpeg cannot handle speed/reverse)")
-            use_resolve_render = True
+            log("  *** FFmpeg cannot extract speed/reverse effects correctly.")
+            log("  ***")
+            log("  *** Options:")
+            log("  ***   1. Switch Extraction to 'Timeline Render' and re-run")
+            log("  ***   2. Right-click the clip > 'Render in Place' first,")
+            log("  ***      then run Topaz on the rendered flat clip")
+            log("  ***")
+            log("  *** Aborting to prevent incorrect extraction.")
+            return
 
         log("  Source: left=%d, right=%d, total=%d -> source_duration=%d (timeline=%d)" % (
             left_offset, right_offset, total_source_frames, source_duration, timeline_duration))
@@ -742,9 +749,10 @@ def OnProcessBatch(ev):
             extract_text = itm['ExtractMode'].CurrentText or ""
             use_resolve_render = "Timeline Render" in extract_text
 
-            # Auto-detect speed/reverse
+            # Auto-detect speed/reverse — skip in FFmpeg mode
             if source_duration != timeline_duration and not use_resolve_render:
-                use_resolve_render = True
+                log("  *** Skipping: speed/reverse effect detected. Use Timeline Render mode.")
+                continue
 
             clip_data = {
                 'name': clip.GetName(),
