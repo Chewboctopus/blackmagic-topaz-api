@@ -602,9 +602,24 @@ def OnProcessCurrent(ev):
             log("Error: Clip has no media file.")
             return
 
-        clip_path = mp.GetClipProperty("File Path")
+        props = mp.GetClipProperty()
+        clip_path = ""
+        if isinstance(props, dict):
+            clip_path = props.get("File Path", "")
+            if not clip_path:
+                for k, v in props.items():
+                    if str(k).lower().replace(" ", "") == "filepath" and v:
+                        clip_path = v
+                        break
+        else:
+            clip_path = mp.GetClipProperty("File Path")
+
         if not clip_path:
             log("Error: Could not get file path.")
+            log("If this is a Compound Clip, Adjustment Clip, or Fusion Comp,")
+            log("you must right-click it and select 'Render in Place' first.")
+            if isinstance(props, dict):
+                log("Available properties: " + ", ".join([str(k) for k in props.keys() if props[k]]))
             return
 
         model_code, res_text, handles, api_key, filter_params = get_params()
@@ -732,9 +747,20 @@ def OnProcessBatch(ev):
                 log("Skipping clip %d: no media pool item." % (i+1))
                 continue
 
-            clip_path = mp.GetClipProperty("File Path")
+            props = mp.GetClipProperty()
+            clip_path = ""
+            if isinstance(props, dict):
+                clip_path = props.get("File Path", "")
+                if not clip_path:
+                    for k, v in props.items():
+                        if str(k).lower().replace(" ", "") == "filepath" and v:
+                            clip_path = v
+                            break
+            else:
+                clip_path = mp.GetClipProperty("File Path")
+
             if not clip_path:
-                log("Skipping clip %d: no file path." % (i+1))
+                log("Skipping clip %d: no file path. (If Compound/Adjustment clip, Render in Place first)" % (i+1))
                 continue
 
             # Calculate source IN/OUT like an EDL
