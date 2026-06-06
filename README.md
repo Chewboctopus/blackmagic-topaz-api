@@ -2,6 +2,8 @@
 
 A native Python script for DaVinci Resolve Studio that sends timeline clips to the [Topaz Video AI API](https://www.topazlabs.com/topaz-video-ai) for upscaling, enhancement, and frame interpolation — then automatically imports and places the results back on your timeline.
 
+![Topaz Batch Processor UI](screenshot.png)
+
 ## Features
 
 - **40+ Topaz Models** — Full support for Proteus, Artemis, Gaia, Iris, Nyx, Theia, Starlight/Astra, Dione, Hyperion, Wonder, and more. The script also polls the live API on startup to detect any new models not yet in its hardcoded list.
