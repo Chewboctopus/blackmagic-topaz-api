@@ -109,6 +109,25 @@ win = dispatcher.AddWindow({
         ui.SpinBox({'ID': 'Grain', 'Value': 0, 'Minimum': 0, 'Maximum': 100, 'Weight': 0.7})
     ]),
 
+    # --- Frame Interpolation Parameters (Chronos / Apollo) ---
+    ui.Label({'ID': 'InterpHeader', 'Text': '── Frame Interpolation ──', 'Weight': 0}),
+    ui.HGroup({'Weight': 0, 'ID': 'FPSMultRow'}, [
+        ui.Label({'ID': 'FPSMultLabel', 'Text': 'FPS Multiplier:', 'Weight': 0.3}),
+        ui.ComboBox({'ID': 'FPSMultCombo', 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0, 'ID': 'SlowmoRow'}, [
+        ui.Label({'ID': 'SlowmoLabel', 'Text': 'Slow Motion Factor:', 'Weight': 0.3}),
+        ui.SpinBox({'ID': 'SlowmoSpin', 'Value': 1, 'Minimum': 1, 'Maximum': 16, 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0, 'ID': 'InterpDupeRow'}, [
+        ui.Label({'ID': 'InterpDupeLabel', 'Text': 'Interpolate Dupe Frames:', 'Weight': 0.3}),
+        ui.CheckBox({'ID': 'InterpDupeCheck', 'Text': 'Detect and replace duplicate frames', 'Checked': True, 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0, 'ID': 'DupeThreshRow'}, [
+        ui.Label({'ID': 'DupeThreshLabel', 'Text': 'Dupe Threshold (0.001-0.1):', 'Weight': 0.3}),
+        ui.SpinBox({'ID': 'DupeThreshSpin', 'Value': 3, 'Minimum': 1, 'Maximum': 100, 'Weight': 0.7})
+    ]),
+
     ui.Label({'Text': 'Status:', 'Weight': 0}),
     ui.TextEdit({'ID': 'LogText', 'ReadOnly': True, 'Weight': 1}),
     ui.HGroup({'Weight': 0}, [
@@ -118,6 +137,11 @@ win = dispatcher.AddWindow({
 ]))
 
 itm = win.GetItems()
+
+# Populate FPS multiplier combo
+for mult in ['1x', '2x', '3x', '4x', '8x', '16x']:
+    itm['FPSMultCombo'].AddItem(mult)
+itm['FPSMultCombo'].CurrentIndex = 1  # default: 2x
 
 # ---------------------------------------------------------------------------
 # Models
@@ -265,11 +289,15 @@ MODEL_INFO = {
     "chr-2": "Chronos v2 — High quality frame interpolation.",
 }
 
+INTERP_MODELS = {"apo-8", "apf-2", "chf-3", "chr-2"}
+
 def update_model_info():
     sel = itm['ModelCombo'].CurrentText or ""
     code = sel.split()[0] if sel else ""
     info = MODEL_INFO.get(code, "No description available.")
     itm['ModelInfo'].PlainText = info
+
+    is_interp = code in INTERP_MODELS
 
     # Determine capabilities for this model
     caps = set()
@@ -290,7 +318,6 @@ def update_model_info():
     }
     creative_models = {"slc-1", "hyp-1", "hyp-2", "wonder-1", "remove-1"}
     prompt_models = {"remove-1", "wonder-1"}
-    interp_models = {"apo-8", "apf-2", "chf-3", "chr-2"}
     utility_models = {"stab-1", "remove-1"}
 
     if code in upscale_models:
@@ -300,17 +327,24 @@ def update_model_info():
     if code in prompt_models:
         caps.add("prompt")
 
-    # Enable/disable controls based on capabilities
-    itm['AutoMode'].Enabled = "mode" in caps
-    itm['Creativity'].Enabled = "creativity" in caps
-    itm['Prompt'].Enabled = "prompt" in caps
-    itm['Compression'].Enabled = "compression" in caps
-    itm['Details'].Enabled = "details" in caps
-    itm['Noise'].Enabled = "noise" in caps
-    itm['Blur'].Enabled = "blur" in caps
-    itm['Halo'].Enabled = "halo" in caps
-    itm['RecoverDetail'].Enabled = "recover" in caps
-    itm['Grain'].Enabled = "grain" in caps
+    # Enable/disable upscale controls (hidden for interp models)
+    itm['AutoMode'].Enabled = "mode" in caps and not is_interp
+    itm['Creativity'].Enabled = "creativity" in caps and not is_interp
+    itm['Prompt'].Enabled = "prompt" in caps and not is_interp
+    itm['Compression'].Enabled = "compression" in caps and not is_interp
+    itm['Details'].Enabled = "details" in caps and not is_interp
+    itm['Noise'].Enabled = "noise" in caps and not is_interp
+    itm['Blur'].Enabled = "blur" in caps and not is_interp
+    itm['Halo'].Enabled = "halo" in caps and not is_interp
+    itm['RecoverDetail'].Enabled = "recover" in caps and not is_interp
+    itm['Grain'].Enabled = "grain" in caps and not is_interp
+    itm['ResCombo'].Enabled = not is_interp  # Interp keeps source resolution
+
+    # Enable/disable interpolation controls
+    itm['FPSMultCombo'].Enabled = is_interp
+    itm['SlowmoSpin'].Enabled = is_interp
+    itm['InterpDupeCheck'].Enabled = is_interp
+    itm['DupeThreshSpin'].Enabled = is_interp
 
 # Show initial model info and set control states
 update_model_info()
@@ -372,6 +406,8 @@ def get_params():
     if api_key and api_key != "YOUR_API_KEY":
         engine.save_api_key(api_key)
 
+    is_interp = model_code in INTERP_MODELS
+
     # Build filter params dict
     auto_mode = itm['AutoMode'].CurrentText or "Auto"
     filter_params = {
@@ -394,7 +430,16 @@ def get_params():
         filter_params["recoverOriginalDetailValue"] = itm['RecoverDetail'].Value / 100.0
         filter_params["grain"] = itm['Grain'].Value / 1000.0  # 0-100 -> 0-0.1
 
-    return model_code, res_text, handles, api_key, filter_params
+    # Interpolation params
+    interp_params = {}
+    if is_interp:
+        fps_mult_text = itm['FPSMultCombo'].CurrentText or "2x"
+        interp_params["fps_multiplier"] = int(fps_mult_text.replace("x", ""))
+        interp_params["slowmo"] = itm['SlowmoSpin'].Value
+        interp_params["interpolate_dupes"] = itm['InterpDupeCheck'].Checked
+        interp_params["dupe_threshold"] = itm['DupeThreshSpin'].Value / 1000.0  # 1-100 -> 0.001-0.1
+
+    return model_code, res_text, handles, api_key, filter_params, interp_params, is_interp
 
 def get_output_resolution(res_text, src_w, src_h):
     """Calculate output width and height from the resolution preset."""
@@ -483,7 +528,7 @@ def render_clip_via_resolve(clip_data, output_path):
 
     return rendered_file
 
-def process_single_clip(clip_data, model_code, res_text, handles, api_key, filter_params):
+def process_single_clip(clip_data, model_code, res_text, handles, api_key, filter_params, interp_params=None, is_interp=False):
     """Process one clip. Runs SYNCHRONOUSLY."""
     clip_path = clip_data['path']
     clip_fps = clip_data['fps']
@@ -536,10 +581,25 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
     w, h, frames, fps, dur, size = engine.probe_video(extracted_path)
     log("  Clip to process: %dx%d, %d frames, %.1f sec" % (w, h, frames, dur))
 
-    out_w, out_h = get_output_resolution(res_text, w, h)
-    log("Sending to Topaz API (%s, %dx%d -> %dx%d)..." % (model_code, w, h, out_w, out_h))
-
-    req_id = engine.process_topaz_video(extracted_path, output_path, api_key, model_code, out_w=out_w, out_h=out_h, filter_params=filter_params, progress_callback=log)
+    if is_interp and interp_params:
+        # --- Frame Interpolation path (Chronos / Apollo) ---
+        fps_mult = interp_params.get("fps_multiplier", 2)
+        slowmo = interp_params.get("slowmo", 1)
+        interp_dupes = interp_params.get("interpolate_dupes", True)
+        dupe_thresh = interp_params.get("dupe_threshold", 0.01)
+        log("Sending to Topaz API — Interpolation (%s, %dx FPS, slowmo=%d, dupes=%s)..." % (
+            model_code, fps_mult, slowmo, interp_dupes))
+        req_id = engine.process_topaz_interpolation(
+            extracted_path, output_path, api_key, model_code,
+            fps_multiplier=fps_mult, slowmo=slowmo,
+            interpolate_dupes=interp_dupes, dupe_threshold=dupe_thresh,
+            progress_callback=log
+        )
+    else:
+        # --- Upscale / Enhancement path ---
+        out_w, out_h = get_output_resolution(res_text, w, h)
+        log("Sending to Topaz API (%s, %dx%d -> %dx%d)..." % (model_code, w, h, out_w, out_h))
+        req_id = engine.process_topaz_video(extracted_path, output_path, api_key, model_code, out_w=out_w, out_h=out_h, filter_params=filter_params, progress_callback=log)
 
     log("Done! Request ID: %s" % req_id)
     log("Output: %s" % output_path)
@@ -602,27 +662,12 @@ def OnProcessCurrent(ev):
             log("Error: Clip has no media file.")
             return
 
-        props = mp.GetClipProperty()
-        clip_path = ""
-        if isinstance(props, dict):
-            clip_path = props.get("File Path", "")
-            if not clip_path:
-                for k, v in props.items():
-                    if str(k).lower().replace(" ", "") == "filepath" and v:
-                        clip_path = v
-                        break
-        else:
-            clip_path = mp.GetClipProperty("File Path")
-
+        clip_path = mp.GetClipProperty("File Path")
         if not clip_path:
             log("Error: Could not get file path.")
-            log("If this is a Compound Clip, Adjustment Clip, or Fusion Comp,")
-            log("you must right-click it and select 'Render in Place' first.")
-            if isinstance(props, dict):
-                log("Available properties: " + ", ".join([str(k) for k in props.keys() if props[k]]))
             return
 
-        model_code, res_text, handles, api_key, filter_params = get_params()
+        model_code, res_text, handles, api_key, filter_params, interp_params, is_interp = get_params()
 
         # Figure out what track this clip is on
         clip_track = 1
@@ -710,7 +755,7 @@ def OnProcessCurrent(ev):
 
         log("Processing: %s" % clip_data['name'])
         log("  Source: %s" % clip_path)
-        process_single_clip(clip_data, model_code, res_text, handles, api_key, filter_params)
+        process_single_clip(clip_data, model_code, res_text, handles, api_key, filter_params, interp_params, is_interp)
         log("\n=== COMPLETE ===")
 
     except Exception as e:
@@ -736,7 +781,7 @@ def OnProcessBatch(ev):
             log("No clips on track %d." % track_idx)
             return
 
-        model_code, res_text, handles, api_key, filter_params = get_params()
+        model_code, res_text, handles, api_key, filter_params, interp_params, is_interp = get_params()
 
         log("Found %d clips on Track %d." % (len(clips), track_idx))
         log("UI will freeze during processing. This is normal.\n")
@@ -747,20 +792,9 @@ def OnProcessBatch(ev):
                 log("Skipping clip %d: no media pool item." % (i+1))
                 continue
 
-            props = mp.GetClipProperty()
-            clip_path = ""
-            if isinstance(props, dict):
-                clip_path = props.get("File Path", "")
-                if not clip_path:
-                    for k, v in props.items():
-                        if str(k).lower().replace(" ", "") == "filepath" and v:
-                            clip_path = v
-                            break
-            else:
-                clip_path = mp.GetClipProperty("File Path")
-
+            clip_path = mp.GetClipProperty("File Path")
             if not clip_path:
-                log("Skipping clip %d: no file path. (If Compound/Adjustment clip, Render in Place first)" % (i+1))
+                log("Skipping clip %d: no file path." % (i+1))
                 continue
 
             # Calculate source IN/OUT like an EDL
@@ -811,7 +845,7 @@ def OnProcessBatch(ev):
 
             log("--- Clip %d/%d: %s ---" % (i+1, len(clips), clip.GetName()))
             try:
-                process_single_clip(clip_data, model_code, res_text, handles, api_key, filter_params)
+                process_single_clip(clip_data, model_code, res_text, handles, api_key, filter_params, interp_params, is_interp)
             except Exception as e:
                 log("ERROR on clip %d: %s" % (i+1, str(e)))
 

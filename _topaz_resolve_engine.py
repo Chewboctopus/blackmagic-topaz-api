@@ -282,3 +282,161 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
     _log("  Downloaded: %.1f MB" % dl_mb)
 
     return request_id
+
+
+def process_topaz_interpolation(input_path, output_path, api_key, model_code,
+                                 fps_multiplier=2, slowmo=1,
+                                 interpolate_dupes=True, dupe_threshold=0.01,
+                                 progress_callback=None):
+    """Submit a frame-interpolation job (Chronos / Apollo) to Topaz API.
+
+    Args:
+        fps_multiplier: Integer multiplier for output FPS (1 = same rate, 2 = double, etc.)
+        slowmo: Slow-motion factor (1 = normal speed, 2 = half speed / double duration)
+        interpolate_dupes: Detect and replace duplicate frames with AI-interpolated ones.
+        dupe_threshold: Sensitivity for duplicate detection (lower = more sensitive).
+        progress_callback: Optional function(msg) called with status updates.
+    """
+    def _log(msg):
+        if progress_callback:
+            progress_callback(msg)
+
+    width, height, nb_frames, fps, duration, file_size = probe_video(input_path)
+
+    output_fps = fps * fps_multiplier
+
+    # Determine container / encoder from source
+    ext = os.path.splitext(input_path)[1].lower().lstrip(".")
+    if ext in ("mp4", "mov", "mkv", "avi", "webm"):
+        src_container = ext
+    else:
+        src_container = "mp4"
+    if src_container == "mov":
+        out_encoder = "ProRes"
+        out_container = "mov"
+    else:
+        out_encoder = "h265"
+        out_container = "mp4"
+
+    # Build FrameInterpolationFilter (different from UpscaleFilter)
+    interp_filter = {
+        "model": model_code,
+        "fps": output_fps,
+        "slowmo": slowmo,
+        "duplicate": interpolate_dupes,
+        "duplicateThreshold": dupe_threshold,
+    }
+
+    payload = {
+        "source": {
+            "container": src_container,
+            "frameCount": nb_frames,
+            "frameRate": fps,
+            "duration": duration,
+            "size": file_size,
+            "resolution": {"width": width, "height": height}
+        },
+        "filters": [interp_filter],
+        "output": {
+            "resolution": {"width": width, "height": height},
+            "frameRate": output_fps,
+            "videoEncoder": out_encoder,
+            "container": out_container,
+            "audioTransfer": "Copy",
+            "audioCodec": "AAC"
+        }
+    }
+
+    headers = {
+        "X-API-Key": api_key,
+        "accept": "application/json",
+        "content-type": "application/json"
+    }
+
+    # 1. Create request
+    _log("  Creating Topaz API interpolation request (%s, %dx FPS, slowmo=%d)..." % (
+        model_code, fps_multiplier, slowmo))
+    resp = requests.post("https://api.topazlabs.com/video/express", headers=headers, json=payload)
+    if resp.status_code != 200:
+        raise Exception("Topaz API error %d: %s" % (resp.status_code, resp.text[:200]))
+
+    req_data = resp.json()
+    request_id = req_data["requestId"]
+    upload_url = req_data["uploadUrls"][0]
+    _log("  Request ID: %s" % request_id)
+
+    # 2. Upload
+    file_mb = os.path.getsize(input_path) / 1048576.0
+    _log("  Uploading %.1f MB..." % file_mb)
+    with open(input_path, "rb") as f:
+        upload_resp = requests.put(upload_url, data=f, headers={"Content-Type": "video/%s" % src_container})
+        if upload_resp.status_code not in (200, 201):
+            raise Exception("Upload failed: %d" % upload_resp.status_code)
+    _log("  Upload complete. Processing...")
+
+    # 3. Poll for completion
+    status_url = "https://api.topazlabs.com/video/%s/status" % request_id
+    poll_count = 0
+    last_progress = -1
+    last_progress_poll = 0
+    stall_limit = 120
+
+    while True:
+        time.sleep(5)
+        poll_count += 1
+        try:
+            s_resp = requests.get(status_url, headers={"X-API-Key": api_key})
+        except Exception:
+            continue
+        if s_resp.status_code == 200:
+            s_data = s_resp.json()
+            status = s_data.get("status")
+            progress = s_data.get("progress", 0)
+            estimates = s_data.get("estimates", {})
+            time_est = estimates.get("time", [])
+
+            if progress != last_progress:
+                last_progress = progress
+                last_progress_poll = poll_count
+                elapsed_min = (poll_count * 5) / 60.0
+                msg = "  Processing: %d%%" % progress
+                if time_est and len(time_est) >= 2:
+                    remaining_sec = time_est[1] - (poll_count * 5)
+                    if remaining_sec > 60:
+                        msg += " (est. %.0f min remaining)" % (remaining_sec / 60.0)
+                    elif remaining_sec > 0:
+                        msg += " (est. %d sec remaining)" % remaining_sec
+                msg += " [%.1f min elapsed]" % elapsed_min
+                _log(msg)
+
+            if status == "complete":
+                download_url = s_data.get("download", {}).get("url")
+                elapsed_min = (poll_count * 5) / 60.0
+                _log("  Interpolation complete! [%.1f min total]" % elapsed_min)
+                break
+            elif status in ("failed", "canceled"):
+                error_msg = s_data.get("error", s_data.get("message", ""))
+                raise Exception("Topaz processing %s: %s\nFull response: %s" % (
+                    status, error_msg, json.dumps(s_data, indent=2)))
+
+            stall_duration = (poll_count - last_progress_poll) * 5
+            if stall_duration >= stall_limit * 5:
+                raise Exception(
+                    "Stalled: no progress for 10 minutes (stuck at %d%%). "
+                    "Request ID: %s" % (last_progress, request_id)
+                )
+
+    # 4. Download
+    if not download_url:
+        raise Exception("No download URL returned")
+    _log("  Downloading result...")
+    d_resp = requests.get(download_url, stream=True)
+    downloaded = 0
+    with open(output_path, "wb") as f:
+        for chunk in d_resp.iter_content(chunk_size=65536):
+            f.write(chunk)
+            downloaded += len(chunk)
+    dl_mb = downloaded / 1048576.0
+    _log("  Downloaded: %.1f MB" % dl_mb)
+
+    return request_id
