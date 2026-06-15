@@ -286,7 +286,8 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
             "frameRate": fps,
             "videoEncoder": out_encoder,
             "container": out_container,
-            "audioTransfer": "Copy"
+            "audioTransfer": "Copy",
+            "audioCodec": "AAC"
         }
     }
 
