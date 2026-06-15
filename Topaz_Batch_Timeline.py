@@ -58,6 +58,10 @@ win = dispatcher.AddWindow({
         ui.LineEdit({'ID': 'Handles', 'Text': '0', 'Weight': 0.7})
     ]),
     ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Safety Padding:', 'Weight': 0.3}),
+        ui.CheckBox({'ID': 'SafetyPadCheck', 'Text': 'Add 2 duplicate frames at head/tail (when no handles)', 'Checked': True, 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
         ui.Label({'Text': 'Extraction:', 'Weight': 0.3}),
         ui.ComboBox({'ID': 'ExtractMode', 'Weight': 0.7})
     ]),
@@ -376,9 +380,26 @@ itm['ExtractMode'].CurrentIndex = 0  # default: Auto
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+import datetime as _dt
+
+# Persistent log file — one per session, kept for debugging / sharing with Topaz dev team
+_LOG_DIR = os.path.expanduser("~/Documents/Topaz_API_Logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
+_LOG_FILE = os.path.join(
+    _LOG_DIR,
+    "topaz_batch_%s.log" % _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+)
+_log_fh = open(_LOG_FILE, "a")
+
 def log(msg):
+    ts = _dt.datetime.now().strftime("%H:%M:%S")
+    # Write to UI
     current = itm['LogText'].PlainText
     itm['LogText'].PlainText = current + msg + "\n"
+    # Write to persistent log file
+    _log_fh.write("[%s] %s\n" % (ts, msg))
+    _log_fh.flush()
+
 
 # Resolution presets: name -> (width, height) or None for scale-based
 RES_MAP = {
@@ -581,6 +602,23 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
     w, h, frames, fps, dur, size = engine.probe_video(extracted_path)
     log("  Clip to process: %dx%d, %d frames, %.1f sec" % (w, h, frames, dur))
 
+    # 2b. Safety padding: when no handles are available, add 2 duplicate
+    #     frames at head and tail to guard against Topaz dropping frames
+    #     at clip boundaries.  The extra frames stay in the output —
+    #     trim them in editorial as needed (Topaz frame loss is variable).
+    SAFETY_PAD = 2
+    padded_path = None
+    topaz_input_path = extracted_path
+
+    use_safety_pad = itm['SafetyPadCheck'].Checked
+    if use_safety_pad and handles == 0:
+        padded_path = os.path.join(base_dir, base_name + "_padded.mp4")
+        log("  No handles — adding %d safety frames to head and tail..." % SAFETY_PAD)
+        engine.pad_clip_with_safety_frames(extracted_path, padded_path, fps, pad_frames=SAFETY_PAD)
+        pad_w, pad_h, pad_frames_total, pad_fps, pad_dur, pad_size = engine.probe_video(padded_path)
+        log("  Padded clip: %d frames (was %d), %.1f sec" % (pad_frames_total, frames, pad_dur))
+        topaz_input_path = padded_path
+
     if is_interp and interp_params:
         # --- Frame Interpolation path (Chronos / Apollo) ---
         fps_mult = interp_params.get("fps_multiplier", 2)
@@ -590,7 +628,7 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
         log("Sending to Topaz API — Interpolation (%s, %dx FPS, slowmo=%d, dupes=%s)..." % (
             model_code, fps_mult, slowmo, interp_dupes))
         req_id = engine.process_topaz_interpolation(
-            extracted_path, output_path, api_key, model_code,
+            topaz_input_path, output_path, api_key, model_code,
             fps_multiplier=fps_mult, slowmo=slowmo,
             interpolate_dupes=interp_dupes, dupe_threshold=dupe_thresh,
             progress_callback=log
@@ -599,9 +637,20 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
         # --- Upscale / Enhancement path ---
         out_w, out_h = get_output_resolution(res_text, w, h)
         log("Sending to Topaz API (%s, %dx%d -> %dx%d)..." % (model_code, w, h, out_w, out_h))
-        req_id = engine.process_topaz_video(extracted_path, output_path, api_key, model_code, out_w=out_w, out_h=out_h, filter_params=filter_params, progress_callback=log)
+        req_id = engine.process_topaz_video(topaz_input_path, output_path, api_key, model_code, out_w=out_w, out_h=out_h, filter_params=filter_params, progress_callback=log)
 
     log("Done! Request ID: %s" % req_id)
+    if padded_path:
+        log("  Note: %d safety frames were added to head and tail (trim in editorial as needed)" % SAFETY_PAD)
+
+    # Cleanup padded temp file
+    if padded_path:
+        try:
+            if os.path.exists(padded_path):
+                os.remove(padded_path)
+        except Exception:
+            pass
+
     log("Output: %s" % output_path)
 
     # 3. Import to Media Pool
