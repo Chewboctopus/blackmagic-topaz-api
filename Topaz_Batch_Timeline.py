@@ -137,6 +137,10 @@ win = dispatcher.AddWindow({
     ui.HGroup({'Weight': 0}, [
         ui.Button({'ID': 'ProcessCurrentBtn', 'Text': 'Process Current Clip', 'Weight': 1}),
         ui.Button({'ID': 'ProcessBatchBtn', 'Text': 'Process Track Batch', 'Weight': 1})
+    ]),
+    ui.HGroup({'Weight': 0}, [
+        ui.Label({'ID': 'LogPathLabel', 'Text': 'Logs: ~/Documents/Topaz_API_Logs/', 'Weight': 0.8}),
+        ui.Button({'ID': 'OpenLogsBtn', 'Text': 'Open Logs Folder', 'Weight': 0.2})
     ])
 ]))
 
@@ -941,6 +945,11 @@ win.On.TopazBatchWin.Close = OnClose
 def OnModelChanged(ev):
     update_model_info()
 win.On.ModelCombo.CurrentIndexChanged = OnModelChanged
+
+def OnOpenLogs(ev):
+    import subprocess
+    subprocess.Popen(["open", _LOG_DIR])
+win.On.OpenLogsBtn.Clicked = OnOpenLogs
 
 win.Show()
 if _new_model_notice:
