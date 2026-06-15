@@ -58,6 +58,10 @@ win = dispatcher.AddWindow({
         ui.LineEdit({'ID': 'Handles', 'Text': '0', 'Weight': 0.7})
     ]),
     ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Safety Padding:', 'Weight': 0.3}),
+        ui.CheckBox({'ID': 'SafetyPadCheck', 'Text': 'Add 2 duplicate frames at head/tail (when no handles)', 'Checked': True, 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
         ui.Label({'Text': 'Extraction:', 'Weight': 0.3}),
         ui.ComboBox({'ID': 'ExtractMode', 'Weight': 0.7})
     ]),
@@ -227,66 +231,66 @@ except Exception:
 # Model descriptions and parameter support
 MODEL_INFO = {
     # --- Proteus ---
-    "prob-4": "Proteus v4 — Versatile all-rounder with full manual controls. Best for low-to-medium quality footage. Supports: compression, details, noise, blur, halo, grain.",
-    "pnat-1": "Proteus Natural v1 — Natural-looking enhancement, less aggressive than standard Proteus. Good for organic footage.",
+    "prob-4": "Proteus v4 -- Versatile all-rounder with full manual controls. Best for low-to-medium quality footage. Supports: compression, details, noise, blur, halo, grain.",
+    "pnat-1": "Proteus Natural v1 -- Natural-looking enhancement, less aggressive than standard Proteus. Good for organic footage.",
     # --- Artemis ---
-    "ahq-12": "Artemis HQ v12 — Detail and sharpening for high-quality sources (Blu-ray, ProRes). Preserves existing quality.",
-    "alq-13": "Artemis LQ v13 — Restores low-quality, heavily compressed footage. Good for web video, old DVDs.",
-    "alqs-2": "Artemis LQ Dehalo v2 — Low-quality restoration with halo removal around edges.",
-    "amq-13": "Artemis MQ v13 — Balanced enhancement for medium-quality sources.",
-    "amqs-2": "Artemis MQ Dehalo v2 — Medium-quality with halo reduction.",
-    "aaa-9": "Artemis Aliased v9 — Removes aliasing/jagged edges from low-res footage.",
-    "aaa-10": "Artemis Aliased v10 — Updated anti-aliasing model.",
-    "aiob-1": "Artemis IO Balanced v1 — Balanced input/output enhancement.",
-    "aion-1": "Artemis IO Natural v1 — Natural-looking IO enhancement.",
+    "ahq-12": "Artemis HQ v12 -- Detail and sharpening for high-quality sources (Blu-ray, ProRes). Preserves existing quality.",
+    "alq-13": "Artemis LQ v13 -- Restores low-quality, heavily compressed footage. Good for web video, old DVDs.",
+    "alqs-2": "Artemis LQ Dehalo v2 -- Low-quality restoration with halo removal around edges.",
+    "amq-13": "Artemis MQ v13 -- Balanced enhancement for medium-quality sources.",
+    "amqs-2": "Artemis MQ Dehalo v2 -- Medium-quality with halo reduction.",
+    "aaa-9": "Artemis Aliased v9 -- Removes aliasing/jagged edges from low-res footage.",
+    "aaa-10": "Artemis Aliased v10 -- Updated anti-aliasing model.",
+    "aiob-1": "Artemis IO Balanced v1 -- Balanced input/output enhancement.",
+    "aion-1": "Artemis IO Natural v1 -- Natural-looking IO enhancement.",
     # --- Color ---
-    "color-1": "Color v1 — Color correction and enhancement. Improves color accuracy and vibrancy.",
+    "color-1": "Color v1 -- Color correction and enhancement. Improves color accuracy and vibrancy.",
     # --- Dione ---
-    "ddv-3": "Dione DV v3 — Specialized for DV/MiniDV camcorder footage deinterlacing and enhancement.",
-    "dtd-4": "Dione TV Detail v4 — Deinterlace interlaced TV content with detail preservation.",
-    "dtds-2": "Dione TV Detail Strong v2 — Aggressive deinterlacing with strong detail recovery.",
-    "dtv-4": "Dione TV v4 — General TV/broadcast deinterlacing.",
-    "dtvs-2": "Dione TV Strong v2 — Strong deinterlacing for challenging broadcast footage.",
+    "ddv-3": "Dione DV v3 -- Specialized for DV/MiniDV camcorder footage deinterlacing and enhancement.",
+    "dtd-4": "Dione TV Detail v4 -- Deinterlace interlaced TV content with detail preservation.",
+    "dtds-2": "Dione TV Detail Strong v2 -- Aggressive deinterlacing with strong detail recovery.",
+    "dtv-4": "Dione TV v4 -- General TV/broadcast deinterlacing.",
+    "dtvs-2": "Dione TV Strong v2 -- Strong deinterlacing for challenging broadcast footage.",
     # --- Gaia ---
-    "gcg-5": "Gaia CG v5 — Optimized for CGI, animation, and anime. Preserves clean lines and flat colors.",
-    "ghq-5": "Gaia HQ v5 — Natural upscaling for high-quality footage to 4K/8K. Preserves organic textures.",
-    "ganim-1": "Gaia Anime v1 — Specialized for anime content. Clean line work, vibrant colors.",
+    "gcg-5": "Gaia CG v5 -- Optimized for CGI, animation, and anime. Preserves clean lines and flat colors.",
+    "ghq-5": "Gaia HQ v5 -- Natural upscaling for high-quality footage to 4K/8K. Preserves organic textures.",
+    "ganim-1": "Gaia Anime v1 -- Specialized for anime content. Clean line work, vibrant colors.",
     # --- Hyperion ---
-    "hyp-1": "Hyperion v1 — SDR to HDR conversion. Expands dynamic range and color gamut to HDR10. Supports: creativity.",
-    "hyp-2": "Hyperion v2 — Improved SDR to HDR. Better highlight recovery and shadow detail. Supports: creativity.",
+    "hyp-1": "Hyperion v1 -- SDR to HDR conversion. Expands dynamic range and color gamut to HDR10. Supports: creativity.",
+    "hyp-2": "Hyperion v2 -- Improved SDR to HDR. Better highlight recovery and shadow detail. Supports: creativity.",
     # --- Iris ---
-    "iris-2": "Iris v2 — Face recovery and fine detail restoration. Great for portrait-heavy footage.",
-    "iris-3": "Iris v3 — Improved face and detail recovery. Best for degraded footage with people.",
+    "iris-2": "Iris v2 -- Face recovery and fine detail restoration. Great for portrait-heavy footage.",
+    "iris-3": "Iris v3 -- Improved face and detail recovery. Best for degraded footage with people.",
     # --- Nyx ---
-    "nxf-1": "Nyx Fine v1 — Fine-grained noise reduction. Preserves subtle details while cleaning noise.",
-    "nxl-1": "Nyx Light v1 — Light denoising for footage with mild noise.",
-    "nxhf-1": "Nyx HiFi v1 — High-fidelity denoising. Maximum detail preservation.",
-    "nyx-3": "Nyx v3 — General denoising for low-light, high-ISO, or grainy footage.",
+    "nxf-1": "Nyx Fine v1 -- Fine-grained noise reduction. Preserves subtle details while cleaning noise.",
+    "nxl-1": "Nyx Light v1 -- Light denoising for footage with mild noise.",
+    "nxhf-1": "Nyx HiFi v1 -- High-fidelity denoising. Maximum detail preservation.",
+    "nyx-3": "Nyx v3 -- General denoising for low-light, high-ISO, or grainy footage.",
     # --- Rhea ---
-    "rhea-1": "Rhea v1 — Stabilization and enhancement model.",
+    "rhea-1": "Rhea v1 -- Stabilization and enhancement model.",
     # --- Theia ---
-    "thd-3": "Theia Detail v3 — Maximum detail and sharpness. Best for footage needing extra clarity.",
-    "thf-4": "Theia Fidelity v4 — Faithful enhancement preserving original character. Less aggressive than Detail.",
-    "thm-2": "Themis 2 (Motion Deblur) — Restores clarity to fast-moving footage by reducing motion blur. AI-powered deblur.",
+    "thd-3": "Theia Detail v3 -- Maximum detail and sharpness. Best for footage needing extra clarity.",
+    "thf-4": "Theia Fidelity v4 -- Faithful enhancement preserving original character. Less aggressive than Detail.",
+    "thm-2": "Themis 2 (Motion Deblur) -- Restores clarity to fast-moving footage by reducing motion blur. AI-powered deblur.",
     # --- Wonder ---
-    "wonder-1": "Wonder v1 — Generative enhancement. Creates new detail using AI generation. Supports: creativity.",
+    "wonder-1": "Wonder v1 -- Generative enhancement. Creates new detail using AI generation. Supports: creativity.",
     # --- Starlight ---
-    "sl-1": "Starlight v1 — Diffusion-based restoration for severely degraded/archival footage. Rebuilds missing detail.",
-    "slc-1": "Astra 1 (slc-1) — Creative diffusion upscaling for GenAI video. Generates dynamic new texture and detail. Supports: creativity (low/middle/high).",
-    "slf-1": "Starlight Fast v1 — Faster diffusion processing, good quality. For quicker turnaround.",
-    "slf-2": "Starlight Fast v2 — Updated fast diffusion model.",
-    "slhq-1": "Starlight HQ v1 — Highest quality diffusion restoration. Slower but best results.",
-    "slm-1": "Starlight Mini v1 — Lightweight Starlight for shorter clips or quick previews.",
-    "slp-2": "Starlight Precise v2 — Precise diffusion with high temporal consistency. Less hallucination.",
-    "slp-2.5": "Starlight Precise v2.5 — Updated precise model with improved consistency.",
+    "sl-1": "Starlight v1 -- Diffusion-based restoration for severely degraded/archival footage. Rebuilds missing detail.",
+    "slc-1": "Astra 1 (slc-1) -- Creative diffusion upscaling for GenAI video. Generates dynamic new texture and detail. Supports: creativity (low/middle/high).",
+    "slf-1": "Starlight Fast v1 -- Faster diffusion processing, good quality. For quicker turnaround.",
+    "slf-2": "Starlight Fast v2 -- Updated fast diffusion model.",
+    "slhq-1": "Starlight HQ v1 -- Highest quality diffusion restoration. Slower but best results.",
+    "slm-1": "Starlight Mini v1 -- Lightweight Starlight for shorter clips or quick previews.",
+    "slp-2": "Starlight Precise v2 -- Precise diffusion with high temporal consistency. Less hallucination.",
+    "slp-2.5": "Starlight Precise v2.5 -- Updated precise model with improved consistency.",
     # --- Utilities ---
-    "stab-1": "Stabilization v1 — Video stabilization. Reduces camera shake and jitter.",
-    "remove-1": "Object Removal v1 — AI-based object removal from video.",
+    "stab-1": "Stabilization v1 -- Video stabilization. Reduces camera shake and jitter.",
+    "remove-1": "Object Removal v1 -- AI-based object removal from video.",
     # --- Frame Interpolation ---
-    "apo-8": "Apollo v8 — Frame interpolation for slow motion or FPS conversion. Smooth motion synthesis.",
-    "apf-2": "Apollo Fast v2 — Faster frame interpolation with good quality.",
-    "chf-3": "Chronos Fast v3 — Fast frame interpolation alternative to Apollo.",
-    "chr-2": "Chronos v2 — High quality frame interpolation.",
+    "apo-8": "Apollo v8 -- Frame interpolation for slow motion or FPS conversion. Smooth motion synthesis.",
+    "apf-2": "Apollo Fast v2 -- Faster frame interpolation with good quality.",
+    "chf-3": "Chronos Fast v3 -- Fast frame interpolation alternative to Apollo.",
+    "chr-2": "Chronos v2 -- High quality frame interpolation.",
 }
 
 INTERP_MODELS = {"apo-8", "apf-2", "chf-3", "chr-2"}
@@ -317,7 +321,7 @@ def update_model_info():
         "hyp-1", "hyp-2", "wonder-1",
     }
     creative_models = {"slc-1", "hyp-1", "hyp-2", "wonder-1", "remove-1"}
-    prompt_models = {"remove-1", "wonder-1"}
+    prompt_models = {"remove-1", "wonder-1", "slc-1"}
     utility_models = {"stab-1", "remove-1"}
 
     if code in upscale_models:
@@ -376,9 +380,26 @@ itm['ExtractMode'].CurrentIndex = 0  # default: Auto
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+import datetime as _dt
+
+# Persistent log file -- one per session, kept for debugging / sharing with Topaz dev team
+_LOG_DIR = os.path.expanduser("~/Documents/Topaz_API_Logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
+_LOG_FILE = os.path.join(
+    _LOG_DIR,
+    "topaz_batch_%s.log" % _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+)
+_log_fh = open(_LOG_FILE, "a")
+
 def log(msg):
+    ts = _dt.datetime.now().strftime("%H:%M:%S")
+    # Write to UI
     current = itm['LogText'].PlainText
     itm['LogText'].PlainText = current + msg + "\n"
+    # Write to persistent log file
+    _log_fh.write("[%s] %s\n" % (ts, msg))
+    _log_fh.flush()
+
 
 # Resolution presets: name -> (width, height) or None for scale-based
 RES_MAP = {
@@ -564,7 +585,7 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
         ext_size = os.path.getsize(extracted_path) / 1048576.0
         log("  Rendered: %.1f MB" % ext_size)
     elif source_start == 0 and handles == 0 and source_duration == clip_data.get('total_source_frames', 0):
-        # Full source file — skip extraction, send directly to Topaz
+        # Full source file -- skip extraction, send directly to Topaz
         # This is common after Render in Place (the clip IS the file)
         log("Using source file directly (no trimming needed).")
         extracted_path = clip_path
@@ -581,16 +602,33 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
     w, h, frames, fps, dur, size = engine.probe_video(extracted_path)
     log("  Clip to process: %dx%d, %d frames, %.1f sec" % (w, h, frames, dur))
 
+    # 2b. Safety padding: when no handles are available, add 2 duplicate
+    #     frames at head and tail to guard against Topaz dropping frames
+    #     at clip boundaries.  The extra frames stay in the output --
+    #     trim them in editorial as needed (Topaz frame loss is variable).
+    SAFETY_PAD = 2
+    padded_path = None
+    topaz_input_path = extracted_path
+
+    use_safety_pad = itm['SafetyPadCheck'].Checked
+    if use_safety_pad and handles == 0:
+        padded_path = os.path.join(base_dir, base_name + "_padded.mp4")
+        log("  No handles -- adding %d safety frames to head and tail..." % SAFETY_PAD)
+        engine.pad_clip_with_safety_frames(extracted_path, padded_path, fps, pad_frames=SAFETY_PAD)
+        pad_w, pad_h, pad_frames_total, pad_fps, pad_dur, pad_size = engine.probe_video(padded_path)
+        log("  Padded clip: %d frames (was %d), %.1f sec" % (pad_frames_total, frames, pad_dur))
+        topaz_input_path = padded_path
+
     if is_interp and interp_params:
         # --- Frame Interpolation path (Chronos / Apollo) ---
         fps_mult = interp_params.get("fps_multiplier", 2)
         slowmo = interp_params.get("slowmo", 1)
         interp_dupes = interp_params.get("interpolate_dupes", True)
         dupe_thresh = interp_params.get("dupe_threshold", 0.01)
-        log("Sending to Topaz API — Interpolation (%s, %dx FPS, slowmo=%d, dupes=%s)..." % (
+        log("Sending to Topaz API -- Interpolation (%s, %dx FPS, slowmo=%d, dupes=%s)..." % (
             model_code, fps_mult, slowmo, interp_dupes))
         req_id = engine.process_topaz_interpolation(
-            extracted_path, output_path, api_key, model_code,
+            topaz_input_path, output_path, api_key, model_code,
             fps_multiplier=fps_mult, slowmo=slowmo,
             interpolate_dupes=interp_dupes, dupe_threshold=dupe_thresh,
             progress_callback=log
@@ -599,9 +637,20 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
         # --- Upscale / Enhancement path ---
         out_w, out_h = get_output_resolution(res_text, w, h)
         log("Sending to Topaz API (%s, %dx%d -> %dx%d)..." % (model_code, w, h, out_w, out_h))
-        req_id = engine.process_topaz_video(extracted_path, output_path, api_key, model_code, out_w=out_w, out_h=out_h, filter_params=filter_params, progress_callback=log)
+        req_id = engine.process_topaz_video(topaz_input_path, output_path, api_key, model_code, out_w=out_w, out_h=out_h, filter_params=filter_params, progress_callback=log)
 
     log("Done! Request ID: %s" % req_id)
+    if padded_path:
+        log("  Note: %d safety frames were added to head and tail (trim in editorial as needed)" % SAFETY_PAD)
+
+    # Cleanup padded temp file
+    if padded_path:
+        try:
+            if os.path.exists(padded_path):
+                os.remove(padded_path)
+        except Exception:
+            pass
+
     log("Output: %s" % output_path)
 
     # 3. Import to Media Pool
@@ -643,7 +692,7 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
     return output_path
 
 # ---------------------------------------------------------------------------
-# Button handlers — SYNCHRONOUS (no threads)
+# Button handlers -- SYNCHRONOUS (no threads)
 # ---------------------------------------------------------------------------
 def OnProcessCurrent(ev):
     itm['LogText'].PlainText = ""
@@ -722,13 +771,13 @@ def OnProcessCurrent(ev):
             log("  Speed/reverse effect detected: %.0f%%" % clip_speed)
 
             if force_full_extent:
-                # User chose to extract all source frames — they'll re-apply speed/reverse
-                log("  Mode: Full Source Extent — extracting all %d source frames" % source_duration)
+                # User chose to extract all source frames -- they'll re-apply speed/reverse
+                log("  Mode: Full Source Extent -- extracting all %d source frames" % source_duration)
                 log("  (Re-apply speed/reverse to enhanced clip after Topaz processing)")
             else:
                 # Auto mode: abort with instructions
                 log("")
-                log("  *** Speed/reverse detected — cannot extract with correct timing.")
+                log("  *** Speed/reverse detected -- cannot extract with correct timing.")
                 log("  *** Choose one:")
                 log("  ***   1. Right-click clip > 'Render in Place' first, then re-run")
                 log("  ***   2. Switch Extraction to 'Full Source Extent' to get all")
@@ -737,7 +786,7 @@ def OnProcessCurrent(ev):
                 log("  Aborted.")
                 return
         else:
-            log("  Straight cut — extracting with FFmpeg")
+            log("  Straight cut -- extracting with FFmpeg")
 
         clip_data = {
             'name': current_clip.GetName(),

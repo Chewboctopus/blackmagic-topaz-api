@@ -108,6 +108,108 @@ def extract_clip(input_path, output_path, source_start_frame, source_duration_fr
     if result.returncode != 0:
         raise Exception("FFmpeg failed (code %d): %s" % (result.returncode, result.stderr[-300:]))
 
+def pad_clip_with_safety_frames(input_path, output_path, fps, pad_frames=2):
+    """Pad a clip with repeated frames at head and tail to guard against Topaz frame drops.
+
+    Duplicates the first `pad_frames` frames at the beginning and the last
+    `pad_frames` frames at the end.  Uses a filter_complex that:
+      1. Extracts the first frame, loops it `pad_frames` times  (head pad)
+      2. Passes the original clip through unchanged               (body)
+      3. Extracts the last frame, loops it `pad_frames` times     (tail pad)
+      4. Concatenates head + body + tail
+
+    Returns the number of frames that were padded on each side (always `pad_frames`).
+    """
+    # Duration of one frame
+    frame_dur = 1.0 / float(fps)
+
+    # Build the filter graph
+    # [0:v] is the input
+    # head: grab frame 0, loop it pad_frames times
+    # body: full original clip
+    # tail: grab last frame, loop it pad_frames times
+    filter_complex = (
+        # Head: trim first frame, loop it
+        "[0:v]trim=start=0:end={fd},setpts=PTS-STARTPTS,loop={loops}:{loop_size}:0,setpts=N/{fps}/TB[head];"
+        # Body: full original
+        "[0:v]setpts=PTS-STARTPTS[body];"
+        # Tail: trim last frame, loop it
+        "[0:v]reverse,trim=start=0:end={fd},setpts=PTS-STARTPTS,loop={loops}:{loop_size}:0,setpts=N/{fps}/TB[tail];"
+        # Concat
+        "[head][body][tail]concat=n=3:v=1:a=0[out]"
+    ).format(
+        fd=frame_dur,
+        loops=pad_frames - 1,   # loop filter adds N *extra* loops (original + N = total)
+        loop_size=1,
+        fps=fps
+    )
+
+    cmd = [
+        get_ffmpeg_path(), "-y", "-nostdin",
+        "-i", input_path,
+        "-filter_complex", filter_complex,
+        "-map", "[out]",
+        "-c:v", "libx264", "-crf", "16", "-preset", "fast",
+        "-pix_fmt", "yuv420p",
+        "-an",
+        output_path
+    ]
+
+    result = subprocess.run(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=600
+    )
+    if result.returncode != 0:
+        raise Exception("FFmpeg pad failed (code %d): %s" % (result.returncode, result.stderr[-500:]))
+
+    return pad_frames
+
+
+def trim_safety_frames(input_path, output_path, fps, pad_frames=2):
+    """Remove the safety padding frames from head and tail of a Topaz-processed clip.
+
+    Trims `pad_frames` frames from the beginning and `pad_frames` frames from the end.
+    """
+    start_sec = pad_frames / float(fps)
+
+    # Get total duration via ffprobe so we can calculate the trim end
+    w, h, total_frames, probe_fps, duration, _ = probe_video(input_path)
+    # Use the Topaz output's own fps for trimming (may differ if interpolation was applied)
+    trim_fps = probe_fps if probe_fps > 0 else fps
+    end_sec = (total_frames - pad_frames) / float(trim_fps)
+
+    # Determine output codec from extension
+    ext = os.path.splitext(output_path)[1].lower()
+    if ext == ".mov":
+        codec_args = ["-c:v", "prores_ks", "-profile:v", "3"]
+    else:
+        codec_args = ["-c:v", "libx264", "-crf", "16", "-preset", "fast", "-pix_fmt", "yuv420p"]
+
+    cmd = [
+        get_ffmpeg_path(), "-y", "-nostdin",
+        "-i", input_path,
+        "-vf", "trim=start=%s:end=%s,setpts=PTS-STARTPTS" % (start_sec, end_sec),
+    ] + codec_args + [
+        "-an",
+        output_path
+    ]
+
+    result = subprocess.run(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=600
+    )
+    if result.returncode != 0:
+        raise Exception("FFmpeg trim failed (code %d): %s" % (result.returncode, result.stderr[-500:]))
+
+
 def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None, out_h=None, container="mov", filter_params=None, progress_callback=None):
     """Submit to Topaz API, upload, poll, download. Returns request ID.
     
@@ -140,7 +242,7 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
         out_encoder = "ProRes"
         out_container = "mov"
     else:
-        # MP4, MKV, WebM etc — use H265 in MP4
+        # MP4, MKV, WebM etc -- use H265 in MP4
         out_encoder = "h265"
         out_container = "mp4"
 
@@ -196,14 +298,18 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
 
     # 1. Create request
     _log("  Creating Topaz API request...")
+    _log("  API Payload: %s" % json.dumps(payload, indent=2))
     resp = requests.post("https://api.topazlabs.com/video/express", headers=headers, json=payload)
+    _log("  API Response: %d" % resp.status_code)
     if resp.status_code != 200:
+        _log("  API Error Body: %s" % resp.text[:500])
         raise Exception("Topaz API error %d: %s" % (resp.status_code, resp.text[:200]))
 
     req_data = resp.json()
     request_id = req_data["requestId"]
     upload_url = req_data["uploadUrls"][0]
     _log("  Request ID: %s" % request_id)
+    _log("  API Response Body: %s" % json.dumps(req_data, indent=2))
 
     # 2. Upload
     file_mb = os.path.getsize(input_path) / 1048576.0
@@ -356,14 +462,18 @@ def process_topaz_interpolation(input_path, output_path, api_key, model_code,
     # 1. Create request
     _log("  Creating Topaz API interpolation request (%s, %dx FPS, slowmo=%d)..." % (
         model_code, fps_multiplier, slowmo))
+    _log("  API Payload: %s" % json.dumps(payload, indent=2))
     resp = requests.post("https://api.topazlabs.com/video/express", headers=headers, json=payload)
+    _log("  API Response: %d" % resp.status_code)
     if resp.status_code != 200:
+        _log("  API Error Body: %s" % resp.text[:500])
         raise Exception("Topaz API error %d: %s" % (resp.status_code, resp.text[:200]))
 
     req_data = resp.json()
     request_id = req_data["requestId"]
     upload_url = req_data["uploadUrls"][0]
     _log("  Request ID: %s" % request_id)
+    _log("  API Response Body: %s" % json.dumps(req_data, indent=2))
 
     # 2. Upload
     file_mb = os.path.getsize(input_path) / 1048576.0
