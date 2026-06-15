@@ -640,8 +640,31 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
         req_id = engine.process_topaz_video(topaz_input_path, output_path, api_key, model_code, out_w=out_w, out_h=out_h, filter_params=filter_params, progress_callback=log)
 
     log("Done! Request ID: %s" % req_id)
+
+    # 2c. Frame count comparison: uploaded vs downloaded
+    uploaded_frames = frames  # from the pre-upload probe
     if padded_path:
-        log("  Note: %d safety frames were added to head and tail (trim in editorial as needed)" % SAFETY_PAD)
+        uploaded_frames = pad_frames_total  # if padded, we sent the padded count
+    out_w2, out_h2, downloaded_frames, out_fps, out_dur, out_size = engine.probe_video(output_path)
+    log("")
+    log("  === FRAME COUNT REPORT ===")
+    log("  Uploaded to Topaz:   %d frames (%dx%d, %.2f fps)" % (uploaded_frames, w, h, fps))
+    log("  Downloaded from Topaz: %d frames (%dx%d, %.2f fps)" % (downloaded_frames, out_w2, out_h2, out_fps))
+    frame_diff = downloaded_frames - uploaded_frames
+    if frame_diff == 0:
+        log("  Discrepancy: NONE (frame counts match)")
+    elif frame_diff < 0:
+        log("  Discrepancy: %d frames LOST by Topaz" % abs(frame_diff))
+    else:
+        log("  Discrepancy: %d frames ADDED by Topaz" % frame_diff)
+    if padded_path:
+        log("  (Safety padding was ON: %d frames added at head + %d at tail before upload)" % (SAFETY_PAD, SAFETY_PAD))
+        # Show what original vs output would be without padding
+        original_expected = frames  # original pre-pad frame count
+        effective_output = downloaded_frames  # what Topaz returned (includes pad frames if not eaten)
+        log("  Original source frames: %d | Topaz output frames: %d" % (original_expected, effective_output))
+    log("  ===========================")
+    log("")
 
     # Cleanup padded temp file
     if padded_path:
