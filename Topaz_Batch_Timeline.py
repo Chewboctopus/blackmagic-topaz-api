@@ -751,29 +751,44 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
         log("Note: Please drag the output file into your Media Pool manually.")
 
     # 4. Place on the lowest available track without overwriting
-    #    If safety padding was used, set source in-point past the pad frames
-    #    so the edit length matches the original. The pad frames stay as
-    #    handles the editor can roll to.
+    #    Calculate source offset based on how many frames Topaz returned
+    #    vs how many we expected. Safety pad frames become handles.
     if imported and timeline_start is not None and track_idx is not None:
         try:
             timeline_end = clip_data['timeline_end']
             target_track = find_available_track(timeline, timeline_start, timeline_end, track_idx)
 
-            # Place the full clip (including safety pad frames).
-            # Pad frames appear as extra handles the editor can roll off.
+            mpi = imported[0]
+
+            # Probe the actual output frame count
+            _, _, out_frames, _, _, _ = engine.probe_video(output_path)
+            excess = out_frames - timeline_duration
+
+            # Determine head offset based on excess
+            # excess=2: both pads survived → skip head pad (frame 0)
+            # excess=1: one pad survived (assume head eaten) → start at frame 0
+            # excess=0: both pads eaten → start at frame 0
+            # excess<0: Topaz lost real frames → start at frame 0
+            if excess >= 2:
+                head_handle = SAFETY_PAD
+            else:
+                head_handle = 0
+
+            tail_handle = max(0, excess - head_handle)
+
+            log("  Placement: output=%d, expected=%d, excess=%d → head_handle=%d, tail_handle=%d" % (
+                out_frames, timeline_duration, excess, head_handle, tail_handle))
+
             clip_info = {
-                "mediaPoolItem": imported[0],
-                "startFrame": 0,
+                "mediaPoolItem": mpi,
+                "startFrame": head_handle,
+                "endFrame": head_handle + timeline_duration,
                 "trackIndex": target_track,
                 "recordFrame": timeline_start
             }
             media_pool.AppendToTimeline([clip_info])
-            pad_offset = SAFETY_PAD if padded_path else 0
-            if pad_offset > 0:
-                log("Placed on Video Track %d at frame %d (safety pad frames available as handles)." % (
-                    target_track, timeline_start))
-            else:
-                log("Placed on Video Track %d at frame %d." % (target_track, timeline_start))
+            log("Placed on Video Track %d at frame %d (startFrame=%d, endFrame=%d)." % (
+                target_track, timeline_start, head_handle, head_handle + timeline_duration))
         except Exception as e:
             log("Note: Could not auto-place on timeline: %s" % str(e))
             log("  The clip is in your Media Pool - drag it to the timeline manually.")
