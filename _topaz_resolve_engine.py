@@ -383,6 +383,16 @@ def auto_trim_output(output_path, expected_frames, head_ref, tail_ref,
 
     _l("  Detected: %d duplicate(s) at head, %d at tail" % (head_dupes, tail_dupes))
 
+    # CRITICAL: never trim more than the safety pad count.
+    # On static/slow shots, real frames also have near-zero consecutive diffs.
+    max_trim = safety_pad * (fps_multiplier if fps_multiplier > 1 else 1)
+    if head_dupes > max_trim:
+        _l("  Capping head trim to %d (safety pad limit)" % max_trim)
+        head_dupes = max_trim
+    if tail_dupes > max_trim:
+        _l("  Capping tail trim to %d (safety pad limit)" % max_trim)
+        tail_dupes = max_trim
+
     if head_dupes == 0 and tail_dupes == 0:
         _l("  No duplicates found -- keeping all frames")
         _l("  Note: output is %d frames longer than expected" % excess)
@@ -521,7 +531,13 @@ def _poll_for_completion(request_id, api_key, _log, task_label="Processing"):
                 download_url = s_data.get("download", {}).get("url")
                 elapsed_min = (poll_count * 5) / 60.0
                 _log("  %s complete! [%.1f min total]" % (task_label, elapsed_min))
-                return download_url
+                # Log credit/cost info if available
+                credits_used = s_data.get("credits", s_data.get("cost", s_data.get("creditsUsed")))
+                if credits_used is not None:
+                    _log("  Credits consumed: %s" % credits_used)
+                # Log full response for debugging (helps discover new fields)
+                _log("  Completion response keys: %s" % list(s_data.keys()))
+                return download_url, s_data
             elif status in ("failed", "canceled"):
                 error_msg = s_data.get("error", s_data.get("message", ""))
                 raise Exception("Topaz processing %s: %s\nFull response: %s" % (
@@ -668,7 +684,7 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
     _upload_with_retry(upload_url, input_path, "video/%s" % src_container, _log)
 
     # 3. Poll for completion
-    download_url = _poll_for_completion(request_id, api_key, _log, task_label="Processing")
+    download_url, completion_data = _poll_for_completion(request_id, api_key, _log, task_label="Processing")
 
     # 4. Download with verification
     _download_result(download_url, output_path, _log)
@@ -738,7 +754,7 @@ def process_topaz_interpolation(input_path, output_path, api_key, model_code,
     _upload_with_retry(upload_url, input_path, "video/%s" % src_container, _log)
 
     # 3. Poll for completion
-    download_url = _poll_for_completion(request_id, api_key, _log, task_label="Interpolation")
+    download_url, completion_data = _poll_for_completion(request_id, api_key, _log, task_label="Interpolation")
 
     # 4. Download with verification
     _download_result(download_url, output_path, _log)
