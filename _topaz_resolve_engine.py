@@ -608,6 +608,11 @@ def _create_api_request(payload, api_key, _log):
     upload_url = req_data["uploadUrls"][0]
     _log("  Request ID: %s" % request_id)
     _log("  API Response Body: %s" % json.dumps(req_data, indent=2))
+    # Log estimated credit cost
+    estimates = req_data.get("estimates", {})
+    cost_est = estimates.get("cost")
+    if cost_est and len(cost_est) >= 2:
+        _log("  Estimated cost: %d-%d credits" % (cost_est[0], cost_est[1]))
     return request_id, upload_url
 
 
