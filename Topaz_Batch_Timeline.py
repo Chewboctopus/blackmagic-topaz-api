@@ -71,6 +71,10 @@ win = dispatcher.AddWindow({
         ui.CheckBox({'ID': 'SafetyPadCheck', 'Text': 'Add 2 duplicate frames at head/tail (when no handles)', 'Checked': True, 'Weight': 0.7})
     ]),
     ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Auto-Trim:', 'Weight': 0.3}),
+        ui.CheckBox({'ID': 'AutoTrimCheck', 'Text': 'Auto-trim excess frames on download (diff-matte matching)', 'Checked': True, 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
         ui.Label({'Text': 'Extraction:', 'Weight': 0.3}),
         ui.ComboBox({'ID': 'ExtractMode', 'Weight': 0.7})
     ]),
@@ -486,6 +490,32 @@ def get_output_resolution(res_text, src_w, src_h):
     else:
         return (src_w * 2, src_h * 2)
 
+def find_available_track(timeline, clip_start, clip_end, source_track):
+    """Find the lowest video track above source_track with no overlapping clips.
+
+    If all existing tracks are occupied, adds a new video track.
+    """
+    track_count = timeline.GetTrackCount("video")
+
+    for t in range(source_track + 1, track_count + 1):
+        items = timeline.GetItemListInTrack("video", t)
+        if not items:
+            return t  # empty track -- safe to use
+        # Check for overlap with any existing clip
+        has_overlap = False
+        for item in items:
+            item_start = item.GetStart()
+            item_end = item.GetEnd()
+            if item_start < clip_end and item_end > clip_start:
+                has_overlap = True
+                break
+        if not has_overlap:
+            return t  # no overlap on this track
+
+    # All existing tracks occupied -- add a new one
+    timeline.AddTrack("video")
+    return track_count + 1
+
 def render_clip_via_resolve(clip_data, output_path):
     """Render a clip range via Resolve's Deliver page. Bakes ALL timeline effects."""
     timeline_start = clip_data['timeline_start']
@@ -615,6 +645,13 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
     w, h, frames, fps, dur, size = engine.probe_video(extracted_path)
     log("  Clip to process: %dx%d, %d frames, %.1f sec" % (w, h, frames, dur))
 
+    # 2a. Save reference frames for auto-trim (before padding)
+    head_ref = None
+    tail_ref = None
+    use_auto_trim = itm['AutoTrimCheck'].Checked
+    if use_auto_trim:
+        head_ref, tail_ref = engine.extract_reference_frames(extracted_path, base_dir, _log=log)
+
     # 2b. Safety padding: when no handles are available, add 2 duplicate
     #     frames at head and tail to guard against Topaz dropping frames
     #     at clip boundaries.  The extra frames stay in the output --
@@ -672,20 +709,38 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
         log("  Discrepancy: %d frames ADDED by Topaz" % frame_diff)
     if padded_path:
         log("  (Safety padding was ON: %d frames added at head + %d at tail before upload)" % (SAFETY_PAD, SAFETY_PAD))
-        # Show what original vs output would be without padding
-        original_expected = frames  # original pre-pad frame count
-        effective_output = downloaded_frames  # what Topaz returned (includes pad frames if not eaten)
+        original_expected = frames
+        effective_output = downloaded_frames
         log("  Original source frames: %d | Topaz output frames: %d" % (original_expected, effective_output))
     log("  ===========================")
     log("")
 
-    # Cleanup padded temp file
+    # 2d. Auto-trim excess frames
+    if use_auto_trim and head_ref and tail_ref:
+        fps_mult = 1
+        if is_interp and interp_params:
+            fps_mult = interp_params.get("fps_multiplier", 1)
+        output_path, final_frame_count = engine.auto_trim_output(
+            output_path, frames, head_ref, tail_ref,
+            fps, safety_pad=SAFETY_PAD if padded_path else 0,
+            fps_multiplier=fps_mult, _log=log
+        )
+
+    # Cleanup temp files
     if padded_path:
         try:
             if os.path.exists(padded_path):
                 os.remove(padded_path)
         except Exception:
             pass
+    # Cleanup reference frame PNGs
+    for ref_file in [head_ref, tail_ref]:
+        if ref_file:
+            try:
+                if os.path.exists(ref_file):
+                    os.remove(ref_file)
+            except Exception:
+                pass
 
     log("Output: %s" % output_path)
 
@@ -697,15 +752,11 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
     except Exception:
         log("Note: Please drag the output file into your Media Pool manually.")
 
-    # 4. Place on track above at same timeline position
+    # 4. Place on the lowest available track without overwriting
     if imported and timeline_start is not None and track_idx is not None:
         try:
-            target_track = track_idx + 1
-            # Ensure the target track exists
-            track_count = timeline.GetTrackCount("video")
-            if target_track > track_count:
-                timeline.AddTrack("video")
-                log("Added new video track %d." % target_track)
+            timeline_end = clip_data['timeline_end']
+            target_track = find_available_track(timeline, timeline_start, timeline_end, track_idx)
 
             media_pool.AppendToTimeline([{
                 "mediaPoolItem": imported[0],

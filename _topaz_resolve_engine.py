@@ -195,6 +195,260 @@ def pad_clip_with_safety_frames(input_path, output_path, fps, pad_frames=2):
 
 
 # ---------------------------------------------------------------------------
+# Smart auto-trim: reference frames + difference matte
+# ---------------------------------------------------------------------------
+
+def extract_reference_frames(input_path, output_dir, _log=None):
+    """Extract first and last frame as PNGs for diff-matte comparison.
+
+    Returns (head_ref_path, tail_ref_path).
+    """
+    head_ref = os.path.join(output_dir, "_ref_head.png")
+    tail_ref = os.path.join(output_dir, "_ref_tail.png")
+
+    ffmpeg = get_ffmpeg_path()
+
+    # First frame
+    cmd_head = [
+        ffmpeg, "-y", "-nostdin",
+        "-i", input_path,
+        "-vf", "select=eq(n\\,0),scale=480:270:force_original_aspect_ratio=disable",
+        "-frames:v", "1",
+        head_ref
+    ]
+    subprocess.run(cmd_head, stdin=subprocess.DEVNULL,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+
+    # Last frame
+    cmd_tail = [
+        ffmpeg, "-y", "-nostdin",
+        "-sseof", "-0.2",
+        "-i", input_path,
+        "-vf", "scale=480:270:force_original_aspect_ratio=disable",
+        "-frames:v", "1",
+        tail_ref
+    ]
+    subprocess.run(cmd_tail, stdin=subprocess.DEVNULL,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+
+    if _log:
+        _log("  Saved reference frames for auto-trim")
+    return head_ref, tail_ref
+
+
+def compute_frame_diff_score(video_path, frame_index, ref_png_path):
+    """Compute difference score between a specific frame of a video and a reference PNG.
+
+    Both are scaled to a fixed 480x270 before comparison to avoid resolution mismatches.
+    Uses -ss seek for fast access (avoids decoding every frame from start).
+    Returns an integer 0 (identical) to 100 (completely different).
+    Lower = better match.
+    """
+    ffmpeg = get_ffmpeg_path()
+
+    # Get fps to calculate timestamp for the target frame
+    _, _, _, v_fps, _, _ = probe_video(video_path)
+    seek_sec = frame_index / float(v_fps) if v_fps > 0 else 0
+
+    # Seek to the frame, scale to fixed size, diff against reference
+    cmd = [
+        ffmpeg, "-nostdin",
+        "-ss", str(seek_sec),
+        "-i", video_path,
+        "-i", ref_png_path,
+        "-filter_complex",
+        "[0:v]scale=480:270:force_original_aspect_ratio=disable[a];"
+        "[1:v]scale=480:270:force_original_aspect_ratio=disable[b];"
+        "[a][b]blend=all_mode=difference,blackframe=amount=0:threshold=0",
+        "-frames:v", "1",
+        "-f", "null", "-"
+    ]
+    result = subprocess.run(cmd, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, timeout=30)
+
+    # Parse blackframe output for pblack (percentage of black pixels)
+    # Higher pblack = more similar (more black in the diff)
+    # Format: [Parsed_blackframe_0 ... ] pblack:98
+    stderr = result.stderr
+    pblack = 0
+    for line in stderr.split("\n"):
+        if "pblack:" in line:
+            try:
+                pblack = int(line.split("pblack:")[1].strip().split()[0])
+            except (ValueError, IndexError):
+                pass
+
+    # Convert pblack to a diff score: 100 = identical, 0 = completely different
+    # We return inverted: 0 = identical, 100 = different
+    return 100 - pblack
+
+
+def auto_trim_output(output_path, expected_frames, head_ref, tail_ref,
+                     fps, safety_pad=0, fps_multiplier=1, _log=None):
+    """Analyze Topaz output and trim to match expected frame count.
+
+    Decision tree:
+      - actual == expected: no trim
+      - actual == expected + 2*safety_pad: trim exact pad from head/tail
+      - actual > expected: diff-matte scan to find matching first/last frames
+      - actual < expected: log warning, don't trim
+
+    Returns the (possibly trimmed) output path and the final frame count.
+    """
+    def _l(msg):
+        if _log:
+            _log(msg)
+
+    _, _, actual_frames, out_fps, _, _ = probe_video(output_path)
+
+    # Adjust expected for interpolation multiplier
+    if fps_multiplier > 1:
+        expected_with_pad = (expected_frames + 2 * safety_pad) * fps_multiplier
+        expected_no_pad = expected_frames * fps_multiplier
+    else:
+        expected_with_pad = expected_frames + 2 * safety_pad
+        expected_no_pad = expected_frames
+
+    _l("")
+    _l("  === AUTO-TRIM ANALYSIS ===")
+    _l("  Expected frames (no pad): %d" % expected_no_pad)
+    if safety_pad > 0:
+        _l("  Expected frames (with pad): %d" % expected_with_pad)
+    _l("  Actual output frames: %d" % actual_frames)
+
+    trim_fps = out_fps if out_fps > 0 else fps
+
+    # Case 1: Perfect match
+    if actual_frames == expected_no_pad:
+        _l("  Result: PERFECT MATCH -- no trim needed")
+        _l("  ===========================")
+        return output_path, actual_frames
+
+    # Case 2: Topaz lost frames -- don't trim, warn
+    if actual_frames < expected_no_pad:
+        _l("  Result: WARNING -- Topaz returned FEWER frames than expected")
+        _l("  Deficit: %d frames lost" % (expected_no_pad - actual_frames))
+        _l("  No trimming applied (would make it worse)")
+        _l("  ===========================")
+        return output_path, actual_frames
+
+    # Case 3: Exact safety pad match -- trim evenly from head and tail
+    if safety_pad > 0 and actual_frames == expected_with_pad:
+        _l("  Result: EXACT SAFETY PAD -- trimming %d frames from each end" % (
+            safety_pad * fps_multiplier))
+        trimmed_path = _trim_head_tail(
+            output_path, trim_fps,
+            head_frames=safety_pad * fps_multiplier,
+            tail_frames=safety_pad * fps_multiplier,
+            _log=_log
+        )
+        _, _, final_frames, _, _, _ = probe_video(trimmed_path)
+        _l("  Trimmed: %d -> %d frames" % (actual_frames, final_frames))
+        _l("  ===========================")
+        return trimmed_path, final_frames
+
+    # Case 4: Topaz returned extra frames (not exact pad) -- diff-matte scan
+    _l("  Result: EXTRA FRAMES -- scanning with difference matte...")
+    excess = actual_frames - expected_no_pad
+    scan_range = min(excess + 3, 8)  # scan a few extra for safety
+
+    # Scan head: find first frame matching the reference head
+    _l("  Scanning head (frames 0-%d)..." % (scan_range - 1))
+    head_scores = []
+    for i in range(scan_range):
+        score = compute_frame_diff_score(output_path, i, head_ref)
+        head_scores.append((i, score))
+        _l("    Frame %d: diff score = %d (lower=better match)" % (i, score))
+
+    # Scan tail: find last frame matching the reference tail
+    _l("  Scanning tail (last %d frames)..." % scan_range)
+    tail_scores = []
+    for i in range(scan_range):
+        frame_idx = actual_frames - 1 - i
+        score = compute_frame_diff_score(output_path, frame_idx, tail_ref)
+        tail_scores.append((frame_idx, score))
+        _l("    Frame %d: diff score = %d (lower=better match)" % (frame_idx, score))
+
+    # Find best matches
+    best_head = min(head_scores, key=lambda x: x[1])
+    best_tail = min(tail_scores, key=lambda x: x[1])
+
+    head_trim = best_head[0]  # frames to skip at start
+    tail_trim = actual_frames - 1 - best_tail[0]  # frames to skip at end
+
+    _l("  Best head match: frame %d (score %d)" % (best_head[0], best_head[1]))
+    _l("  Best tail match: frame %d (score %d)" % (best_tail[0], best_tail[1]))
+
+    if head_trim == 0 and tail_trim == 0:
+        _l("  No trimming needed (best matches are at boundaries)")
+        _l("  ===========================")
+        return output_path, actual_frames
+
+    _l("  Trimming: skip %d from head, %d from tail" % (head_trim, tail_trim))
+    trimmed_path = _trim_head_tail(
+        output_path, trim_fps,
+        head_frames=head_trim,
+        tail_frames=tail_trim,
+        _log=_log
+    )
+    _, _, final_frames, _, _, _ = probe_video(trimmed_path)
+    _l("  Trimmed: %d -> %d frames (expected %d)" % (actual_frames, final_frames, expected_no_pad))
+    if final_frames > expected_no_pad:
+        _l("  Note: result is %d frames longer than expected -- OK for editorial" % (
+            final_frames - expected_no_pad))
+    _l("  ===========================")
+    return trimmed_path, final_frames
+
+
+def _trim_head_tail(input_path, fps, head_frames, tail_frames, _log=None):
+    """Trim head_frames from the start and tail_frames from the end."""
+    _, _, total_frames, _, _, _ = probe_video(input_path)
+
+    start_sec = head_frames / float(fps)
+    end_frame = total_frames - tail_frames
+    duration_sec = (end_frame - head_frames) / float(fps)
+
+    base, ext = os.path.splitext(input_path)
+    trimmed_path = base + "_trimmed" + ext
+
+    # Determine codec from extension
+    if ext.lower() == ".mov":
+        codec_args = ["-c:v", "prores_ks", "-profile:v", "3"]
+    else:
+        codec_args = ["-c:v", "libx264", "-crf", "16", "-preset", "fast", "-pix_fmt", "yuv420p"]
+
+    cmd = [
+        get_ffmpeg_path(), "-y", "-nostdin",
+        "-ss", str(start_sec),
+        "-i", input_path,
+        "-t", str(duration_sec),
+    ] + codec_args + [
+        "-an",
+        trimmed_path
+    ]
+
+    result = subprocess.run(
+        cmd, stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        text=True, timeout=600
+    )
+    if result.returncode != 0:
+        if _log:
+            _log("  WARNING: trim failed, keeping original: %s" % result.stderr[-200:])
+        return input_path
+
+    # Replace original with trimmed version
+    try:
+        os.remove(input_path)
+        os.rename(trimmed_path, input_path)
+    except OSError:
+        return trimmed_path
+
+    return input_path
+
+
+# ---------------------------------------------------------------------------
 # Shared API helpers (used by both upscale and interpolation)
 # ---------------------------------------------------------------------------
 
