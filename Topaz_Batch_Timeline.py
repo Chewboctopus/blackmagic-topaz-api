@@ -300,7 +300,7 @@ MODEL_INFO = {
     "slp-2.5": "Starlight Precise v2.5 -- Updated precise model with improved consistency.",
     # --- Utilities ---
     "stab-1": "Stabilization v1 -- Video stabilization. Reduces camera shake and jitter.",
-    "remove-1": "Object Removal v1 -- A mask painter will open in your browser. Paint over the areas to remove, then click Save Mask.",
+    "remove-1": "[UNDER DEVELOPMENT] Video Foreground Object Removal -- Requires a tracked matte video. Not yet supported.",
     # --- Frame Interpolation ---
     "apo-8": "Apollo v8 -- Frame interpolation for slow motion or FPS conversion. Smooth motion synthesis.",
     "apf-2": "Apollo Fast v2 -- Faster frame interpolation with good quality.",
@@ -325,10 +325,10 @@ UPSCALE_MODELS = {
     "sl-1", "slc-1", "slf-1", "slf-2", "slhq-1", "slm-1", "slp-2", "slp-2.5",
     "hyp-1", "hyp-2", "wonder-1",
 }
-CREATIVE_MODELS = {"slc-1", "hyp-1", "hyp-2", "wonder-1", "remove-1"}
-PROMPT_MODELS = {"remove-1", "wonder-1", "slc-1"}
-UTILITY_MODELS = {"stab-1", "remove-1"}
-MASK_REQUIRED_MODELS = {"remove-1"}  # Models that need a mask image (not yet supported)
+CREATIVE_MODELS = {"slc-1", "hyp-1", "hyp-2", "wonder-1"}
+PROMPT_MODELS = {"wonder-1", "slc-1"}
+UTILITY_MODELS = {"stab-1"}
+UNDER_DEVELOPMENT_MODELS = {"remove-1"}  # Requires tracked matte video -- not yet supported
 
 def update_model_info():
     sel = itm['ModelCombo'].CurrentText or ""
@@ -669,49 +669,15 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
         log("  Padded clip: %d frames (was %d), %.1f sec" % (pad_frames_total, frames, pad_dur))
         topaz_input_path = padded_path
 
-    # Mask painter: if model requires a mask, launch the painter now
+    # Under-development models: block with message
     mask_path = None
-    if model_code in MASK_REQUIRED_MODELS:
+    if model_code in UNDER_DEVELOPMENT_MODELS:
         log("")
-        log("  '%s' requires a mask. Launching mask painter..." % model_code)
-        # Extract frame 1 as PNG for painting
-        mask_frame_path = os.path.join(base_dir, base_name + "_mask_frame.png")
-        mask_output_path = os.path.join(base_dir, base_name + "_mask.png")
-        try:
-            engine.extract_frame_as_png(topaz_input_path, mask_frame_path, frame_num=0)
-            log("  Extracted frame for mask painting: %s" % mask_frame_path)
-        except Exception as e:
-            log("  *** ERROR extracting frame for mask: %s" % str(e))
-            return
-
-        # Import and launch mask painter
-        try:
-            _utility_dir = os.path.expanduser(
-                "~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility"
-            )
-            if _utility_dir not in sys.path:
-                sys.path.insert(0, _utility_dir)
-            from mask_painter import launch_mask_painter
-            log("  Opening mask painter in browser...")
-            log("  Paint the areas to remove, then click 'Save Mask'")
-            mask_path = launch_mask_painter(mask_frame_path, mask_output_path, _log=log)
-        except Exception as e:
-            log("  *** ERROR launching mask painter: %s" % str(e))
-            return
-        finally:
-            # Cleanup frame PNG
-            try:
-                if os.path.exists(mask_frame_path):
-                    os.remove(mask_frame_path)
-            except Exception:
-                pass
-
-        if not mask_path:
-            log("  *** No mask painted. Cannot proceed with '%s'." % model_code)
-            log("  *** Please paint a mask and try again.")
-            return
-        log("  Mask saved: %s" % mask_path)
+        log("  *** '%s' is under development." % model_code)
+        log("  This model requires a tracked matte video (not a single mask image).")
+        log("  Matte video support will be added in a future update.")
         log("")
+        return
 
     if is_interp and interp_params:
         # --- Frame Interpolation path (Chronos / Apollo) ---
