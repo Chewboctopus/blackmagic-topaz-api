@@ -383,7 +383,7 @@ def auto_trim_output(output_path, expected_frames, head_ref, tail_ref,
 
     _l("  Detected: %d duplicate(s) at head, %d at tail" % (head_dupes, tail_dupes))
 
-    # CRITICAL: never trim more than the safety pad count.
+    # CRITICAL: never trim more than the safety pad count per end.
     # On static/slow shots, real frames also have near-zero consecutive diffs.
     max_trim = safety_pad * (fps_multiplier if fps_multiplier > 1 else 1)
     if head_dupes > max_trim:
@@ -393,9 +393,28 @@ def auto_trim_output(output_path, expected_frames, head_ref, tail_ref,
         _l("  Capping tail trim to %d (safety pad limit)" % max_trim)
         tail_dupes = max_trim
 
+    # ALSO: total trim must not exceed total excess frames.
+    # If Topaz already ate some safety frames, we have fewer to trim.
+    total_trim = head_dupes + tail_dupes
+    if total_trim > excess:
+        _l("  Total trim (%d) exceeds excess (%d) -- reducing..." % (total_trim, excess))
+        # Distribute excess evenly, prefer trimming the end with lower diff (more likely dupe)
+        if excess == 0:
+            head_dupes = 0
+            tail_dupes = 0
+        elif excess == 1:
+            # Trim from the end with more confidence (we don't know which one Topaz ate)
+            # Keep 1 from whichever end, zero the other
+            head_dupes = 1
+            tail_dupes = 0
+        else:
+            # Distribute evenly
+            head_dupes = excess // 2
+            tail_dupes = excess - head_dupes
+        _l("  Adjusted trim: %d head, %d tail" % (head_dupes, tail_dupes))
+
     if head_dupes == 0 and tail_dupes == 0:
-        _l("  No duplicates found -- keeping all frames")
-        _l("  Note: output is %d frames longer than expected" % excess)
+        _l("  No trimming needed")
         _l("  ===========================")
         return output_path, actual_frames
 
