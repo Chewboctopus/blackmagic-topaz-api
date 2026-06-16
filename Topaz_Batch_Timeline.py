@@ -759,19 +759,19 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
             timeline_end = clip_data['timeline_end']
             target_track = find_available_track(timeline, timeline_start, timeline_end, track_idx)
 
-            # Calculate source offsets for safety pad
-            pad_offset = SAFETY_PAD if padded_path else 0
+            # Place the full clip (including safety pad frames).
+            # Pad frames appear as extra handles the editor can roll off.
             clip_info = {
                 "mediaPoolItem": imported[0],
-                "startFrame": pad_offset,
-                "endFrame": pad_offset + timeline_duration - 1,
+                "startFrame": 0,
                 "trackIndex": target_track,
                 "recordFrame": timeline_start
             }
             media_pool.AppendToTimeline([clip_info])
+            pad_offset = SAFETY_PAD if padded_path else 0
             if pad_offset > 0:
-                log("Placed on Video Track %d at frame %d (source offset +%d for safety pad, %d handles available)." % (
-                    target_track, timeline_start, pad_offset, pad_offset))
+                log("Placed on Video Track %d at frame %d (safety pad frames available as handles)." % (
+                    target_track, timeline_start))
             else:
                 log("Placed on Video Track %d at frame %d." % (target_track, timeline_start))
         except Exception as e:
