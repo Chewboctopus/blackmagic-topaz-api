@@ -647,33 +647,41 @@ def _upload_mask_asset(mask_path, api_key, _log):
     except Exception as e:
         _log("  Topaz asset endpoint failed: %s" % str(e))
 
-    # Strategy 2: Upload to file.io (free, one-time download)
+    # Strategy 2: Upload to litterbox.catbox.moe (temporary, 1 hour)
     try:
-        _log("  Uploading mask to file.io...")
+        _log("  Uploading mask to litterbox (temp 1h hosting)...")
         with open(mask_path, "rb") as f:
-            resp = requests.post("https://file.io", files={"file": f}, timeout=30)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("success"):
-                mask_url = data.get("link")
-                _log("  Mask hosted at: %s" % mask_url)
-                return mask_url
-        _log("  file.io returned %d" % resp.status_code)
-    except Exception as e:
-        _log("  file.io failed: %s" % str(e))
-
-    # Strategy 3: Upload to 0x0.st (free file hosting)
-    try:
-        _log("  Uploading mask to 0x0.st...")
-        with open(mask_path, "rb") as f:
-            resp = requests.post("https://0x0.st", files={"file": f}, timeout=30)
-        if resp.status_code == 200:
+            resp = requests.post(
+                "https://litterbox.catbox.moe/resources/internals/api.php",
+                data={"reqtype": "fileupload", "time": "1h"},
+                files={"fileToUpload": (os.path.basename(mask_path), f, "image/png")},
+                timeout=30
+            )
+        if resp.status_code == 200 and resp.text.strip().startswith("http"):
             mask_url = resp.text.strip()
             _log("  Mask hosted at: %s" % mask_url)
             return mask_url
-        _log("  0x0.st returned %d" % resp.status_code)
+        _log("  litterbox returned %d: %s" % (resp.status_code, resp.text[:100]))
     except Exception as e:
-        _log("  0x0.st failed: %s" % str(e))
+        _log("  litterbox failed: %s" % str(e))
+
+    # Strategy 3: Upload to catbox.moe (permanent)
+    try:
+        _log("  Uploading mask to catbox.moe...")
+        with open(mask_path, "rb") as f:
+            resp = requests.post(
+                "https://catbox.moe/user/api.php",
+                data={"reqtype": "fileupload"},
+                files={"fileToUpload": (os.path.basename(mask_path), f, "image/png")},
+                timeout=30
+            )
+        if resp.status_code == 200 and resp.text.strip().startswith("http"):
+            mask_url = resp.text.strip()
+            _log("  Mask hosted at: %s" % mask_url)
+            return mask_url
+        _log("  catbox returned %d: %s" % (resp.status_code, resp.text[:100]))
+    except Exception as e:
+        _log("  catbox failed: %s" % str(e))
 
     _log("  *** ERROR: Could not upload mask to any hosting service.")
     return None
