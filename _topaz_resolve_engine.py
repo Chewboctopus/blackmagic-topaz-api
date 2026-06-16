@@ -198,6 +198,26 @@ def pad_clip_with_safety_frames(input_path, output_path, fps, pad_frames=2):
 # Smart auto-trim: reference frames + difference matte
 # ---------------------------------------------------------------------------
 
+def extract_frame_as_png(input_path, output_path, frame_num=0):
+    """Extract a single frame as PNG at native resolution.
+
+    Args:
+        input_path: Path to the video file.
+        output_path: Path to save the PNG.
+        frame_num: 0-indexed frame number to extract.
+    """
+    ffmpeg = get_ffmpeg_path()
+    cmd = [
+        ffmpeg, "-y", "-nostdin",
+        "-i", input_path,
+        "-vf", "select=eq(n\\,%d)" % frame_num,
+        "-frames:v", "1",
+        "-update", "1",
+        output_path
+    ]
+    subprocess.run(cmd, capture_output=True, check=True)
+
+
 def extract_reference_frames(input_path, output_dir, _log=None):
     """Extract first and last frame as PNGs for diff-matte comparison.
 
@@ -589,7 +609,7 @@ def _download_result(download_url, output_path, _log):
 
 
 def _create_api_request(payload, api_key, _log):
-    """Submit a job to Topaz API. Returns (request_id, upload_url)."""
+    """Submit a job to Topaz API. Returns (request_id, upload_url, all_upload_urls)."""
     headers = {
         "X-API-Key": api_key,
         "accept": "application/json",
@@ -605,15 +625,18 @@ def _create_api_request(payload, api_key, _log):
 
     req_data = resp.json()
     request_id = req_data["requestId"]
-    upload_url = req_data["uploadUrls"][0]
+    upload_urls = req_data["uploadUrls"]
+    upload_url = upload_urls[0]
     _log("  Request ID: %s" % request_id)
+    if len(upload_urls) > 1:
+        _log("  Upload URLs: %d (source + mask)" % len(upload_urls))
     _log("  API Response Body: %s" % json.dumps(req_data, indent=2))
     # Log estimated credit cost
     estimates = req_data.get("estimates", {})
     cost_est = estimates.get("cost")
     if cost_est and len(cost_est) >= 2:
         _log("  Estimated cost: %d-%d credits" % (cost_est[0], cost_est[1]))
-    return request_id, upload_url
+    return request_id, upload_url, upload_urls
 
 
 def _determine_codec(input_path):
@@ -633,10 +656,12 @@ def _determine_codec(input_path):
 # Public API functions
 # ---------------------------------------------------------------------------
 
-def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None, out_h=None, container="mov", filter_params=None, progress_callback=None):
+def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None, out_h=None,
+                        container="mov", filter_params=None, mask_path=None, progress_callback=None):
     """Submit to Topaz API, upload, poll, download. Returns request ID.
 
     Args:
+        mask_path: Optional path to a mask PNG for object removal (remove-1).
         progress_callback: Optional function(msg) called with status updates during polling.
     """
     if filter_params is None:
@@ -681,6 +706,13 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
     if prompt:
         upscale_filter["prompt"] = prompt
 
+    # Mask for object removal models
+    if mask_path:
+        # Read mask dimensions and size
+        mask_size = os.path.getsize(mask_path)
+        upscale_filter["maskSize"] = mask_size
+        _log("  Mask file: %s (%d bytes)" % (mask_path, mask_size))
+
     payload = {
         "source": {
             "container": src_container,
@@ -702,15 +734,33 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
     }
 
     # 1. Create request
-    request_id, upload_url = _create_api_request(payload, api_key, _log)
+    request_id, upload_url, all_upload_urls = _create_api_request(payload, api_key, _log)
 
-    # 2. Upload with retry
+    # 2. Upload video with retry
     _upload_with_retry(upload_url, input_path, "video/%s" % src_container, _log)
 
-    # 3. Poll for completion
+    # 3. Upload mask if provided
+    if mask_path:
+        _log("  Uploading mask...")
+        try:
+            if len(all_upload_urls) > 1:
+                # API provided a dedicated mask upload URL
+                mask_upload_url = all_upload_urls[1]
+                _log("  Using dedicated mask upload URL")
+            else:
+                # Fallback: try replacing source extension in the URL
+                mask_upload_url = upload_url.replace("source.mp4", "mask.png")
+                _log("  No dedicated mask URL -- using fallback pattern")
+            _upload_with_retry(mask_upload_url, mask_path, "image/png", _log)
+            _log("  Mask uploaded.")
+        except Exception as e:
+            _log("  Warning: mask upload failed: %s" % str(e))
+            _log("  Proceeding without mask -- API may reject the request.")
+
+    # 4. Poll for completion
     download_url, completion_data = _poll_for_completion(request_id, api_key, _log, task_label="Processing")
 
-    # 4. Download with verification
+    # 5. Download with verification
     _download_result(download_url, output_path, _log)
 
     return request_id
@@ -772,7 +822,7 @@ def process_topaz_interpolation(input_path, output_path, api_key, model_code,
         model_code, fps_multiplier, slowmo))
 
     # 1. Create request
-    request_id, upload_url = _create_api_request(payload, api_key, _log)
+    request_id, upload_url, _ = _create_api_request(payload, api_key, _log)
 
     # 2. Upload with retry
     _upload_with_retry(upload_url, input_path, "video/%s" % src_container, _log)

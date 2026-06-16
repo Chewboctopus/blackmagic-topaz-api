@@ -300,7 +300,7 @@ MODEL_INFO = {
     "slp-2.5": "Starlight Precise v2.5 -- Updated precise model with improved consistency.",
     # --- Utilities ---
     "stab-1": "Stabilization v1 -- Video stabilization. Reduces camera shake and jitter.",
-    "remove-1": "Object Removal v1 -- Requires a mask image (not yet supported in this script). Use Topaz Video AI desktop app for object removal.",
+    "remove-1": "Object Removal v1 -- A mask painter will open in your browser. Paint over the areas to remove, then click Save Mask.",
     # --- Frame Interpolation ---
     "apo-8": "Apollo v8 -- Frame interpolation for slow motion or FPS conversion. Smooth motion synthesis.",
     "apf-2": "Apollo Fast v2 -- Faster frame interpolation with good quality.",
@@ -669,14 +669,46 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
         log("  Padded clip: %d frames (was %d), %.1f sec" % (pad_frames_total, frames, pad_dur))
         topaz_input_path = padded_path
 
-    # Pre-flight: block models that require a mask
+    # Mask painter: if model requires a mask, launch the painter now
+    mask_path = None
     if model_code in MASK_REQUIRED_MODELS:
         log("")
-        log("  *** ERROR: '%s' requires a mask image (mask_uri), which is not yet" % model_code)
-        log("  *** supported in this script. Use the Topaz Video AI desktop app")
-        log("  *** for object removal workflows.")
+        log("  '%s' requires a mask. Launching mask painter..." % model_code)
+        # Extract frame 1 as PNG for painting
+        mask_frame_path = os.path.join(base_dir, base_name + "_mask_frame.png")
+        mask_output_path = os.path.join(base_dir, base_name + "_mask.png")
+        try:
+            engine.extract_frame_as_png(topaz_input_path, mask_frame_path, frame_num=0)
+            log("  Extracted frame for mask painting: %s" % mask_frame_path)
+        except Exception as e:
+            log("  *** ERROR extracting frame for mask: %s" % str(e))
+            return
+
+        # Import and launch mask painter
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            sys.path.insert(0, script_dir)
+            from mask_painter import launch_mask_painter
+            log("  Opening mask painter in browser...")
+            log("  Paint the areas to remove, then click 'Save Mask'")
+            mask_path = launch_mask_painter(mask_frame_path, mask_output_path, _log=log)
+        except Exception as e:
+            log("  *** ERROR launching mask painter: %s" % str(e))
+            return
+        finally:
+            # Cleanup frame PNG
+            try:
+                if os.path.exists(mask_frame_path):
+                    os.remove(mask_frame_path)
+            except Exception:
+                pass
+
+        if not mask_path:
+            log("  *** No mask painted. Cannot proceed with '%s'." % model_code)
+            log("  *** Please paint a mask and try again.")
+            return
+        log("  Mask saved: %s" % mask_path)
         log("")
-        return
 
     if is_interp and interp_params:
         # --- Frame Interpolation path (Chronos / Apollo) ---
@@ -696,7 +728,9 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
         # --- Upscale / Enhancement path ---
         out_w, out_h = get_output_resolution(res_text, w, h)
         log("Sending to Topaz API (%s, %dx%d -> %dx%d)..." % (model_code, w, h, out_w, out_h))
-        req_id = engine.process_topaz_video(topaz_input_path, output_path, api_key, model_code, out_w=out_w, out_h=out_h, filter_params=filter_params, progress_callback=log)
+        req_id = engine.process_topaz_video(topaz_input_path, output_path, api_key, model_code,
+                                            out_w=out_w, out_h=out_h, filter_params=filter_params,
+                                            mask_path=mask_path, progress_callback=log)
 
     log("Done! Request ID: %s" % req_id)
 
