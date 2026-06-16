@@ -236,30 +236,43 @@ def extract_reference_frames(input_path, output_dir, _log=None):
     return head_ref, tail_ref
 
 
-def compute_frame_diff_score(video_path, frame_index, ref_png_path):
-    """Compute difference score between a specific frame of a video and a reference PNG.
+def compute_consecutive_diff(video_path, frame_a, frame_b):
+    """Compute difference score between two frames of the SAME video.
 
-    Both are scaled to a fixed 480x270 before comparison to avoid resolution mismatches.
-    Uses -ss seek for fast access (avoids decoding every frame from start).
+    Uses -ss seek for fast access. Both frames scaled to 480x270.
     Returns an integer 0 (identical) to 100 (completely different).
-    Lower = better match.
+    Lower = more similar (likely duplicate).
     """
     ffmpeg = get_ffmpeg_path()
-
-    # Get fps to calculate timestamp for the target frame
     _, _, _, v_fps, _, _ = probe_video(video_path)
-    seek_sec = frame_index / float(v_fps) if v_fps > 0 else 0
 
-    # Seek to the frame, scale to fixed size, diff against reference
+    seek_a = frame_a / float(v_fps) if v_fps > 0 else 0
+    seek_b = frame_b / float(v_fps) if v_fps > 0 else 0
+
+    # Extract both frames as PNGs, diff them
+    import tempfile
+    tmp_a = os.path.join(tempfile.gettempdir(), "_diff_a.png")
+    tmp_b = os.path.join(tempfile.gettempdir(), "_diff_b.png")
+
+    for seek, tmp in [(seek_a, tmp_a), (seek_b, tmp_b)]:
+        cmd = [
+            ffmpeg, "-y", "-nostdin",
+            "-ss", str(seek),
+            "-i", video_path,
+            "-vf", "scale=480:270:force_original_aspect_ratio=disable",
+            "-frames:v", "1",
+            tmp
+        ]
+        subprocess.run(cmd, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+
+    # Now diff the two PNGs
     cmd = [
         ffmpeg, "-nostdin",
-        "-ss", str(seek_sec),
-        "-i", video_path,
-        "-i", ref_png_path,
+        "-i", tmp_a,
+        "-i", tmp_b,
         "-filter_complex",
-        "[0:v]scale=480:270:force_original_aspect_ratio=disable[a];"
-        "[1:v]scale=480:270:force_original_aspect_ratio=disable[b];"
-        "[a][b]blend=all_mode=difference,blackframe=amount=0:threshold=0",
+        "[0:v][1:v]blend=all_mode=difference,blackframe=amount=0:threshold=32",
         "-frames:v", "1",
         "-f", "null", "-"
     ]
@@ -267,32 +280,35 @@ def compute_frame_diff_score(video_path, frame_index, ref_png_path):
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, timeout=30)
 
-    # Parse blackframe output for pblack (percentage of black pixels)
-    # Higher pblack = more similar (more black in the diff)
-    # Format: [Parsed_blackframe_0 ... ] pblack:98
-    stderr = result.stderr
+    # Cleanup
+    for tmp in [tmp_a, tmp_b]:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+    # Parse pblack
     pblack = 0
-    for line in stderr.split("\n"):
+    for line in result.stderr.split("\n"):
         if "pblack:" in line:
             try:
                 pblack = int(line.split("pblack:")[1].strip().split()[0])
             except (ValueError, IndexError):
                 pass
 
-    # Convert pblack to a diff score: 100 = identical, 0 = completely different
-    # We return inverted: 0 = identical, 100 = different
+    # 0 = identical (pblack=100), 100 = different (pblack=0)
     return 100 - pblack
 
 
 def auto_trim_output(output_path, expected_frames, head_ref, tail_ref,
                      fps, safety_pad=0, fps_multiplier=1, _log=None):
-    """Analyze Topaz output and trim to match expected frame count.
+    """Analyze Topaz output and trim duplicate safety-pad frames.
 
-    Decision tree:
-      - actual == expected: no trim
-      - actual == expected + 2*safety_pad: trim exact pad from head/tail
-      - actual > expected: diff-matte scan to find matching first/last frames
-      - actual < expected: log warning, don't trim
+    Strategy: instead of comparing against the original source (which Topaz
+    transforms too heavily), detect DUPLICATE FRAMES within the output.
+    Safety pad frames are copies of the first/last real frame, so consecutive
+    frame diffs at the head/tail will show near-zero difference for duplicates
+    and normal motion difference for real content transitions.
 
     Returns the (possibly trimmed) output path and the final frame count.
     """
@@ -319,7 +335,7 @@ def auto_trim_output(output_path, expected_frames, head_ref, tail_ref,
 
     trim_fps = out_fps if out_fps > 0 else fps
 
-    # Case 1: Perfect match
+    # Case 1: Perfect match -- no extras to trim
     if actual_frames == expected_no_pad:
         _l("  Result: PERFECT MATCH -- no trim needed")
         _l("  ===========================")
@@ -333,63 +349,51 @@ def auto_trim_output(output_path, expected_frames, head_ref, tail_ref,
         _l("  ===========================")
         return output_path, actual_frames
 
-    # Case 3: Exact safety pad match -- trim evenly from head and tail
-    if safety_pad > 0 and actual_frames == expected_with_pad:
-        _l("  Result: EXACT SAFETY PAD -- trimming %d frames from each end" % (
-            safety_pad * fps_multiplier))
-        trimmed_path = _trim_head_tail(
-            output_path, trim_fps,
-            head_frames=safety_pad * fps_multiplier,
-            tail_frames=safety_pad * fps_multiplier,
-            _log=_log
-        )
-        _, _, final_frames, _, _, _ = probe_video(trimmed_path)
-        _l("  Trimmed: %d -> %d frames" % (actual_frames, final_frames))
-        _l("  ===========================")
-        return trimmed_path, final_frames
-
-    # Case 4: Topaz returned extra frames (not exact pad) -- diff-matte scan
-    _l("  Result: EXTRA FRAMES -- scanning with difference matte...")
+    # Case 3+4: Extra frames -- scan for duplicates at head and tail
     excess = actual_frames - expected_no_pad
-    scan_range = min(excess + 3, 8)  # scan a few extra for safety
+    _l("  Extra frames: %d -- scanning for duplicates..." % excess)
 
-    # Scan head: find first frame matching the reference head
-    _l("  Scanning head (frames 0-%d)..." % (scan_range - 1))
-    head_scores = []
+    # Scan head: compare consecutive frames to find where duplicates end
+    scan_range = min(excess + 3, 8)
+    _l("  Scanning head (consecutive diffs, frames 0-%d)..." % scan_range)
+    head_dupes = 0
     for i in range(scan_range):
-        score = compute_frame_diff_score(output_path, i, head_ref)
-        head_scores.append((i, score))
-        _l("    Frame %d: diff score = %d (lower=better match)" % (i, score))
+        score = compute_consecutive_diff(output_path, i, i + 1)
+        is_dupe = score < 15  # threshold: < 15 = likely duplicate
+        _l("    Frame %d vs %d: diff = %d %s" % (i, i + 1, score,
+            "<-- DUPLICATE" if is_dupe else ""))
+        if is_dupe:
+            head_dupes += 1
+        else:
+            break  # first real motion = end of duplicate run
 
-    # Scan tail: find last frame matching the reference tail
-    _l("  Scanning tail (last %d frames)..." % scan_range)
-    tail_scores = []
+    # Scan tail: compare consecutive frames from the end
+    _l("  Scanning tail (consecutive diffs, last %d frames)..." % scan_range)
+    tail_dupes = 0
     for i in range(scan_range):
-        frame_idx = actual_frames - 1 - i
-        score = compute_frame_diff_score(output_path, frame_idx, tail_ref)
-        tail_scores.append((frame_idx, score))
-        _l("    Frame %d: diff score = %d (lower=better match)" % (frame_idx, score))
+        idx = actual_frames - 1 - i
+        score = compute_consecutive_diff(output_path, idx, idx - 1)
+        is_dupe = score < 15
+        _l("    Frame %d vs %d: diff = %d %s" % (idx, idx - 1, score,
+            "<-- DUPLICATE" if is_dupe else ""))
+        if is_dupe:
+            tail_dupes += 1
+        else:
+            break
 
-    # Find best matches
-    best_head = min(head_scores, key=lambda x: x[1])
-    best_tail = min(tail_scores, key=lambda x: x[1])
+    _l("  Detected: %d duplicate(s) at head, %d at tail" % (head_dupes, tail_dupes))
 
-    head_trim = best_head[0]  # frames to skip at start
-    tail_trim = actual_frames - 1 - best_tail[0]  # frames to skip at end
-
-    _l("  Best head match: frame %d (score %d)" % (best_head[0], best_head[1]))
-    _l("  Best tail match: frame %d (score %d)" % (best_tail[0], best_tail[1]))
-
-    if head_trim == 0 and tail_trim == 0:
-        _l("  No trimming needed (best matches are at boundaries)")
+    if head_dupes == 0 and tail_dupes == 0:
+        _l("  No duplicates found -- keeping all frames")
+        _l("  Note: output is %d frames longer than expected" % excess)
         _l("  ===========================")
         return output_path, actual_frames
 
-    _l("  Trimming: skip %d from head, %d from tail" % (head_trim, tail_trim))
+    _l("  Trimming: %d from head, %d from tail" % (head_dupes, tail_dupes))
     trimmed_path = _trim_head_tail(
         output_path, trim_fps,
-        head_frames=head_trim,
-        tail_frames=tail_trim,
+        head_frames=head_dupes,
+        tail_frames=tail_dupes,
         _log=_log
     )
     _, _, final_frames, _, _, _ = probe_video(trimmed_path)
@@ -397,6 +401,9 @@ def auto_trim_output(output_path, expected_frames, head_ref, tail_ref,
     if final_frames > expected_no_pad:
         _l("  Note: result is %d frames longer than expected -- OK for editorial" % (
             final_frames - expected_no_pad))
+    elif final_frames < expected_no_pad:
+        _l("  Note: result is %d frames shorter than expected" % (
+            expected_no_pad - final_frames))
     _l("  ===========================")
     return trimmed_path, final_frames
 

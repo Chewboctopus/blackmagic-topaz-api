@@ -662,7 +662,7 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
     #     frames at head and tail to guard against Topaz dropping frames
     #     at clip boundaries.  The extra frames stay in the output --
     #     trim them in editorial as needed (Topaz frame loss is variable).
-    SAFETY_PAD = 2
+    SAFETY_PAD = 1
     padded_path = None
     topaz_input_path = extracted_path
 
