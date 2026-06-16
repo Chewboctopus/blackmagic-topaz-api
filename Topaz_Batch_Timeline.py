@@ -68,11 +68,7 @@ win = dispatcher.AddWindow({
     ]),
     ui.HGroup({'Weight': 0}, [
         ui.Label({'Text': 'Safety Padding:', 'Weight': 0.3}),
-        ui.CheckBox({'ID': 'SafetyPadCheck', 'Text': 'Add 2 duplicate frames at head/tail (when no handles)', 'Checked': True, 'Weight': 0.7})
-    ]),
-    ui.HGroup({'Weight': 0}, [
-        ui.Label({'Text': 'Auto-Trim:', 'Weight': 0.3}),
-        ui.CheckBox({'ID': 'AutoTrimCheck', 'Text': 'Auto-trim excess frames on download (diff-matte matching)', 'Checked': True, 'Weight': 0.7})
+        ui.CheckBox({'ID': 'SafetyPadCheck', 'Text': 'Add 1 safety frame at head/tail as handles (when no handles)', 'Checked': True, 'Weight': 0.7})
     ]),
     ui.HGroup({'Weight': 0}, [
         ui.Label({'Text': 'Extraction:', 'Weight': 0.3}),
@@ -604,6 +600,7 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
     clip_fps = clip_data['fps']
     source_start = clip_data['left_offset']
     source_duration = clip_data['duration']
+    timeline_duration = clip_data.get('timeline_duration', source_duration)
     timeline_start = clip_data['timeline_start']
     track_idx = clip_data['track']
     use_resolve_render = clip_data.get('use_resolve_render', False)
@@ -651,12 +648,9 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
     w, h, frames, fps, dur, size = engine.probe_video(extracted_path)
     log("  Clip to process: %dx%d, %d frames, %.1f sec" % (w, h, frames, dur))
 
-    # 2a. Save reference frames for auto-trim (before padding)
+    # 2a. Reference frames (kept for future visual verification)
     head_ref = None
     tail_ref = None
-    use_auto_trim = itm['AutoTrimCheck'].Checked
-    if use_auto_trim:
-        head_ref, tail_ref = engine.extract_reference_frames(extracted_path, base_dir, _log=log)
 
     # 2b. Safety padding: when no handles are available, add 2 duplicate
     #     frames at head and tail to guard against Topaz dropping frames
@@ -730,17 +724,6 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
     log("  ===========================")
     log("")
 
-    # 2d. Auto-trim excess frames
-    if use_auto_trim and head_ref and tail_ref:
-        fps_mult = 1
-        if is_interp and interp_params:
-            fps_mult = interp_params.get("fps_multiplier", 1)
-        output_path, final_frame_count = engine.auto_trim_output(
-            output_path, frames, head_ref, tail_ref,
-            fps, safety_pad=SAFETY_PAD if padded_path else 0,
-            fps_multiplier=fps_mult, _log=log
-        )
-
     # Cleanup temp files
     if padded_path:
         try:
@@ -748,7 +731,7 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
                 os.remove(padded_path)
         except Exception:
             pass
-    # Cleanup reference frame PNGs
+    # Cleanup reference frame PNGs (no longer used for auto-trim, but clean up if created)
     for ref_file in [head_ref, tail_ref]:
         if ref_file:
             try:
@@ -768,18 +751,29 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
         log("Note: Please drag the output file into your Media Pool manually.")
 
     # 4. Place on the lowest available track without overwriting
+    #    If safety padding was used, set source in-point past the pad frames
+    #    so the edit length matches the original. The pad frames stay as
+    #    handles the editor can roll to.
     if imported and timeline_start is not None and track_idx is not None:
         try:
             timeline_end = clip_data['timeline_end']
             target_track = find_available_track(timeline, timeline_start, timeline_end, track_idx)
 
-            media_pool.AppendToTimeline([{
+            # Calculate source offsets for safety pad
+            pad_offset = SAFETY_PAD if padded_path else 0
+            clip_info = {
                 "mediaPoolItem": imported[0],
-                "startFrame": 0,
+                "startFrame": pad_offset,
+                "endFrame": pad_offset + timeline_duration - 1,
                 "trackIndex": target_track,
                 "recordFrame": timeline_start
-            }])
-            log("Placed on Video Track %d at frame %d." % (target_track, timeline_start))
+            }
+            media_pool.AppendToTimeline([clip_info])
+            if pad_offset > 0:
+                log("Placed on Video Track %d at frame %d (source offset +%d for safety pad, %d handles available)." % (
+                    target_track, timeline_start, pad_offset, pad_offset))
+            else:
+                log("Placed on Video Track %d at frame %d." % (target_track, timeline_start))
         except Exception as e:
             log("Note: Could not auto-place on timeline: %s" % str(e))
             log("  The clip is in your Media Pool - drag it to the timeline manually.")
@@ -896,6 +890,7 @@ def OnProcessCurrent(ev):
             'fps': float(mp.GetClipProperty("FPS")),
             'left_offset': left_offset,
             'duration': source_duration,
+            'timeline_duration': timeline_duration,
             'total_source_frames': total_source_frames,
             'timeline_start': timeline_start_frame,
             'timeline_end': timeline_end_frame,
@@ -985,6 +980,7 @@ def OnProcessBatch(ev):
                 'fps': float(mp.GetClipProperty("FPS")),
                 'left_offset': left_offset,
                 'duration': source_duration,
+                'timeline_duration': timeline_duration,
                 'total_source_frames': total_source_frames,
                 'timeline_start': clip.GetStart(),
                 'timeline_end': clip.GetEnd(),
