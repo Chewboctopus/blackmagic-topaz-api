@@ -686,8 +686,11 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
 
         # Import and launch mask painter
         try:
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            sys.path.insert(0, script_dir)
+            _utility_dir = os.path.expanduser(
+                "~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility"
+            )
+            if _utility_dir not in sys.path:
+                sys.path.insert(0, _utility_dir)
             from mask_painter import launch_mask_painter
             log("  Opening mask painter in browser...")
             log("  Paint the areas to remove, then click 'Save Mask'")
