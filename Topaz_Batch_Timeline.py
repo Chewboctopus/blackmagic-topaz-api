@@ -1,5 +1,14 @@
+"""Topaz API Batch Processor for DaVinci Resolve.
+
+A Fusion script that sends timeline clips to the Topaz Video AI cloud API
+for upscaling, enhancement, denoising, frame interpolation, and more.
+Run from Workspace > Scripts in DaVinci Resolve.
+"""
 import sys
 import os
+import time
+import traceback
+import datetime as _dt
 
 # ---------------------------------------------------------------------------
 # Import engine
@@ -299,6 +308,25 @@ MODEL_INFO = {
 
 INTERP_MODELS = {"apo-8", "apf-2", "chf-3", "chr-2"}
 
+# Model capability sets -- defined once, used everywhere
+UPSCALE_MODELS = {
+    "prob-4", "pnat-1",
+    "ahq-12", "alq-13", "alqs-2", "amq-13", "amqs-2",
+    "aaa-9", "aaa-10", "aiob-1", "aion-1",
+    "gcg-5", "ghq-5", "ganim-1",
+    "iris-2", "iris-3",
+    "nxf-1", "nxl-1", "nxhf-1", "nyx-3",
+    "rhea-1",
+    "thd-3", "thf-4", "thm-2",
+    "color-1",
+    "ddv-3", "dtd-4", "dtds-2", "dtv-4", "dtvs-2",
+    "sl-1", "slc-1", "slf-1", "slf-2", "slhq-1", "slm-1", "slp-2", "slp-2.5",
+    "hyp-1", "hyp-2", "wonder-1",
+}
+CREATIVE_MODELS = {"slc-1", "hyp-1", "hyp-2", "wonder-1", "remove-1"}
+PROMPT_MODELS = {"remove-1", "wonder-1", "slc-1"}
+UTILITY_MODELS = {"stab-1", "remove-1"}
+
 def update_model_info():
     sel = itm['ModelCombo'].CurrentText or ""
     code = sel.split()[0] if sel else ""
@@ -309,30 +337,12 @@ def update_model_info():
 
     # Determine capabilities for this model
     caps = set()
-    # Upscale/enhancement models support manual tuning
-    upscale_models = {
-        "prob-4", "pnat-1",
-        "ahq-12", "alq-13", "alqs-2", "amq-13", "amqs-2",
-        "aaa-9", "aaa-10", "aiob-1", "aion-1",
-        "gcg-5", "ghq-5", "ganim-1",
-        "iris-2", "iris-3",
-        "nxf-1", "nxl-1", "nxhf-1", "nyx-3",
-        "rhea-1",
-        "thd-3", "thf-4", "thm-2",
-        "color-1",
-        "ddv-3", "dtd-4", "dtds-2", "dtv-4", "dtvs-2",
-        "sl-1", "slc-1", "slf-1", "slf-2", "slhq-1", "slm-1", "slp-2", "slp-2.5",
-        "hyp-1", "hyp-2", "wonder-1",
-    }
-    creative_models = {"slc-1", "hyp-1", "hyp-2", "wonder-1", "remove-1"}
-    prompt_models = {"remove-1", "wonder-1", "slc-1"}
-    utility_models = {"stab-1", "remove-1"}
 
-    if code in upscale_models:
+    if code in UPSCALE_MODELS:
         caps.update(["mode", "compression", "details", "noise", "blur", "halo", "recover", "grain"])
-    if code in creative_models:
+    if code in CREATIVE_MODELS:
         caps.add("creativity")
-    if code in prompt_models:
+    if code in PROMPT_MODELS:
         caps.add("prompt")
 
     # Enable/disable upscale controls (hidden for interp models)
@@ -384,7 +394,6 @@ itm['ExtractMode'].CurrentIndex = 0  # default: Auto
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-import datetime as _dt
 
 # Persistent log file -- one per session, kept for debugging / sharing with Topaz dev team
 _LOG_DIR = os.path.expanduser("~/Documents/Topaz_API_Logs")
@@ -393,7 +402,7 @@ _LOG_FILE = os.path.join(
     _LOG_DIR,
     "topaz_batch_%s.log" % _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 )
-_log_fh = open(_LOG_FILE, "a")
+_log_fh = open(_LOG_FILE, "a", encoding="utf-8")
 
 def log(msg):
     ts = _dt.datetime.now().strftime("%H:%M:%S")
@@ -417,7 +426,7 @@ RES_MAP = {
 }
 
 # Models that support creativity parameter
-CREATIVE_MODELS = {"slc-1", "hyp-1", "hyp-2", "wonder-1"}
+# (model sets defined above as module-level constants)
 
 def get_params():
     sel = itm['ModelCombo'].CurrentText or models[0]
@@ -425,7 +434,7 @@ def get_params():
     res_text = itm['ResCombo'].CurrentText or "4K UHD (3840x2160)"
     try:
         handles = int(itm['Handles'].Text)
-    except:
+    except ValueError:
         handles = 0
     api_key = itm['APIKey'].Text
     if api_key and api_key != "YOUR_API_KEY":
@@ -518,7 +527,7 @@ def render_clip_via_resolve(clip_data, output_path):
     project.StartRendering(job_id)
 
     # Poll for completion
-    import time
+    # time already imported at module level
     while project.IsRenderingInProgress():
         time.sleep(1)
 
@@ -835,7 +844,6 @@ def OnProcessCurrent(ev):
         log("\n=== COMPLETE ===")
 
     except Exception as e:
-        import traceback
         log("ERROR: " + str(e))
         log(traceback.format_exc())
 
@@ -848,7 +856,7 @@ def OnProcessBatch(ev):
 
         try:
             track_idx = int(itm['TrackNum'].Text)
-        except:
+        except ValueError:
             log("Error: Track must be a number.")
             return
 
@@ -928,11 +936,12 @@ def OnProcessBatch(ev):
         log("\n=== BATCH COMPLETE ===")
 
     except Exception as e:
-        import traceback
         log("ERROR: " + str(e))
         log(traceback.format_exc())
 
 def OnClose(ev):
+    _log_fh.flush()
+    _log_fh.close()
     dispatcher.ExitLoop()
 
 # ---------------------------------------------------------------------------
