@@ -6,22 +6,38 @@ A native Python script for DaVinci Resolve Studio that sends timeline clips to t
 
 ## Features
 
+### Core
 - **40+ Topaz Models** — Full support for Proteus, Artemis, Gaia, Iris, Nyx, Theia, Starlight/Astra, Dione, Hyperion, Wonder, and more. The script also polls the live API on startup to detect any new models not yet in its hardcoded list.
-- **Frame Interpolation** — Chronos and Apollo models for FPS multiplication (2x–16x), slow motion, and duplicate frame replacement.
 - **Single Clip or Batch** — Process the clip under the playhead, or batch-process every clip on a selected video track.
 - **Smart Extraction** — FFmpeg source-copy extraction with configurable frame handles. Automatically detects speed/reverse effects and offers safe workarounds.
-- **Auto Timeline Placement** — Imports the enhanced clip into your Media Pool and places it on the track above at the correct timeline position.
 - **Filter Controls** — Full manual tuning for supported models: compression, details, noise, blur/sharpen, halo, recover original detail, grain amount, creativity, and text prompts.
 - **Format Matching** — Automatically matches output container and codec to your source (ProRes for .mov, H.265 for .mp4).
-- **Progress Tracking** — Live processing percentage, time estimates, and stall detection during Topaz API jobs.
+- **Credit Estimation** — Logs the estimated credit cost (min–max) from the Topaz API before processing begins.
+
+### Frame Interpolation
+- **Chronos & Apollo** — FPS multiplication (2×–16×), slow motion, and duplicate frame replacement.
+- **Lock to Slowmo** — FPS multiplier auto-syncs to the slow motion factor, preventing accidental high-FPS renders. Unlock to set them independently.
+
+### Timeline Intelligence
+- **Safety Padding** — When a clip has no handles (straight cut), the script adds 1 duplicate frame at the head and tail before uploading. This protects the first/last frames from Topaz's tendency to corrupt boundary frames. The pad frames remain in the output as rollable handles.
+- **Smart Placement** — After processing, the enhanced clip is imported to the Media Pool and placed on the track above at the correct timeline position. Source in/out points are calculated based on how many frames Topaz returned vs. expected:
+  - **Both pads survived** → Head pad becomes a handle, edit starts at the first real frame
+  - **One pad eaten** → Edit starts at frame 0 (Topaz ate the head pad), tail pad is a handle
+  - **Both pads eaten** → Full output placed as-is
+- **Collision-Free Track Placement** — If the target track is occupied, the script automatically moves to the next higher track.
+- **Progress Tracking** — Live processing percentage, time estimates, and stall detection (10-minute timeout) during Topaz API jobs.
 - **API Key Persistence** — Saves your Topaz API key locally so you only enter it once.
+
+### Pre-flight Guards
+- **Remove-1 Warning** — The `remove-1` (Object Removal) model requires a mask, which is not yet wired into the pipeline. The script warns you before wasting credits on a guaranteed 400 error.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `Topaz_Batch_Timeline.py` | Main script — UI, clip analysis, timeline logic, button handlers |
-| `_topaz_resolve_engine.py` | Engine library — FFmpeg extraction, ffprobe, Topaz API communication (upload, poll, download), API key storage |
+| `_topaz_resolve_engine.py` | Engine library — FFmpeg extraction, ffprobe, Topaz API communication (upload, poll, download), safety padding, API key storage |
+| `mask_painter.py` | Browser-based mask painter for object removal (WIP — not yet integrated into the pipeline) |
 | `Topaz_Batch_Timeline.lua` | Lua launcher stub (calls the Python script from Resolve's Script menu) |
 | `TopazEnhance.setting` | Fusion macro preset for Topaz enhancement |
 
@@ -53,12 +69,24 @@ A native Python script for DaVinci Resolve Studio that sends timeline clips to t
 6. Click **Process Current Clip** (clip under playhead) or **Process Track Batch** (all clips on the selected track).
 7. The script will extract, upload to Topaz, poll for completion, download the result, import it, and place it on the track above.
 
+### Safety Padding & Handles
+
+When a clip is a straight cut (no handles), the script adds **1 safety frame** at the head and tail by duplicating the boundary frames. This protects against Topaz's known behavior of corrupting or dropping the first/last frame during processing.
+
+After Topaz returns the result:
+- The **full output file is kept intact** (no re-encoding or trimming)
+- The clip is placed on the timeline with **source in/out offsets** calculated from the actual output frame count
+- Safety pad frames remain **available as handles** — you can roll the edit to access them
+
+This is a non-destructive, editorial-standard approach.
+
 ### Frame Interpolation (Chronos / Apollo)
 
 When you select an interpolation model (`apo-8`, `apf-2`, `chf-3`, `chr-2`), the UI switches to interpolation controls:
 
-- **FPS Multiplier** — 1x through 16x output frame rate
+- **FPS Multiplier** — 1× through 16× output frame rate
 - **Slow Motion Factor** — 1 = normal speed, 2 = half speed, etc.
+- **Lock to Slowmo** *(default ON)* — Locks the FPS multiplier to the slow motion factor, so 2× slowmo = 2× FPS. Prevents accidental 48fps output when you only wanted slow motion.
 - **Interpolate Duplicate Frames** — AI-detects and replaces duplicate/repeated frames
 - **Duplicate Threshold** — Sensitivity for duplicate detection (lower = more aggressive)
 
@@ -120,10 +148,20 @@ If a clip has a speed change or reverse applied, the script detects it and offer
 |------|------|-------|
 | `hyp-2` | Hyperion v2 | SDR → HDR conversion |
 | `stab-1` | Stabilization v1 | Camera shake reduction |
-| `remove-1` | Object Removal v1 | AI object removal |
+| `remove-1` | Object Removal v1 | AI object removal (requires mask — not yet supported) |
 | `color-1` | Color v1 | Color correction |
 
 </details>
+
+## Log Output
+
+All processing activity is logged to `~/Documents/Topaz_API_Logs/`. Each session creates a timestamped log file with:
+
+- Full API payload (model, resolution, filters)
+- Estimated credit cost
+- Upload/download progress
+- Frame count report (uploaded vs. downloaded, discrepancy detection)
+- Placement diagnostics (excess frames, head/tail handle calculation)
 
 ## Requirements
 
@@ -132,6 +170,11 @@ If a clip has a speed change or reverse applied, the script detects it and offer
 - **FFmpeg / ffprobe** installed
 - **Topaz Video AI API key** — [Get one here](https://www.topazlabs.com/developers)
 - Python `requests` module (`pip install requests`)
+
+## Roadmap
+
+- [ ] **Mask Painter Integration** — Browser-based mask painting for `remove-1` object removal. The painter module (`mask_painter.py`) is built; needs wiring into the pipeline + Topaz mask upload.
+- [ ] **Visual Verification GUI** — Triptych popup showing first/middle/last frame diff-mattes for verifying alignment before committing to timeline.
 
 ## License
 

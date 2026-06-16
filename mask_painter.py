@@ -66,6 +66,7 @@ canvas { display: block; }
     position: fixed; pointer-events: none;
     border: 2px solid rgba(255,255,255,0.6);
     border-radius: 50%; transform: translate(-50%, -50%);
+    z-index: 100;
 }
 .status {
     margin-top: 12px; font-size: 13px; color: #888;
@@ -73,7 +74,7 @@ canvas { display: block; }
 </style>
 </head>
 <body>
-<h1>Paint mask over areas to remove (white = remove)</h1>
+<h1>Paint mask over areas to remove (cyan overlay → saved as white)</h1>
 <div class="toolbar">
     <label>Brush: <span id="sizeLabel">30</span>px</label>
     <input type="range" id="brushSize" min="3" max="150" value="30">
@@ -102,65 +103,77 @@ const status = document.getElementById('status');
 let painting = false;
 let erasing = false;
 let brushSize = 30;
+// Separate tracking: drawX/drawY for canvas coords, previewX/previewY for screen coords
+let drawX = 0, drawY = 0;
 
 // Load background frame
 const img = new Image();
 img.onload = () => bgCtx.drawImage(img, 0, 0, W, H);
 img.src = 'data:image/png;base64,FRAME_B64';
 
-// Semi-transparent red overlay for painting visibility
-ctx.globalAlpha = 0.5;
+// Paint color: semi-transparent cyan so user can see through
+const PAINT_COLOR = 'rgba(0, 220, 255, 0.35)';
+const PAINT_ALPHA = 0.35;
 
 brushSlider.oninput = () => {
     brushSize = parseInt(brushSlider.value);
     sizeLabel.textContent = brushSize;
-    updatePreview(lastX, lastY);
 };
 
-let lastX = 0, lastY = 0;
+// Get canvas-relative coords, accounting for CSS scaling
+function canvasCoords(e) {
+    const r = overlay.getBoundingClientRect();
+    const scaleX = W / r.width;
+    const scaleY = H / r.height;
+    return {
+        x: (e.clientX - r.left) * scaleX,
+        y: (e.clientY - r.top) * scaleY
+    };
+}
 
 overlay.addEventListener('mousedown', (e) => {
     painting = true;
-    const r = overlay.getBoundingClientRect();
-    lastX = e.clientX - r.left;
-    lastY = e.clientY - r.top;
-    drawDot(lastX, lastY);
+    const c = canvasCoords(e);
+    drawX = c.x;
+    drawY = c.y;
+    drawDot(drawX, drawY);
 });
 
 overlay.addEventListener('mousemove', (e) => {
-    const r = overlay.getBoundingClientRect();
-    const x = e.clientX - r.left;
-    const y = e.clientY - r.top;
-    updatePreview(e.clientX, e.clientY);
+    // Update brush preview (screen coords)
+    preview.style.left = e.clientX + 'px';
+    preview.style.top = e.clientY + 'px';
+    preview.style.width = brushSize + 'px';
+    preview.style.height = brushSize + 'px';
+
     if (!painting) return;
-    drawLine(lastX, lastY, x, y);
-    lastX = x; lastY = y;
+    const c = canvasCoords(e);
+    drawLine(drawX, drawY, c.x, c.y);
+    drawX = c.x;
+    drawY = c.y;
 });
 
 overlay.addEventListener('mouseup', () => painting = false);
 overlay.addEventListener('mouseleave', () => painting = false);
 
+// Update preview when moving outside canvas too
 document.addEventListener('mousemove', (e) => {
-    updatePreview(e.clientX, e.clientY);
-});
-
-function updatePreview(x, y) {
-    lastX = x; lastY = y;
-    preview.style.left = x + 'px';
-    preview.style.top = y + 'px';
+    preview.style.left = e.clientX + 'px';
+    preview.style.top = e.clientY + 'px';
     preview.style.width = brushSize + 'px';
     preview.style.height = brushSize + 'px';
-}
+});
 
 function drawDot(x, y) {
     if (erasing) {
         ctx.globalCompositeOperation = 'destination-out';
         ctx.globalAlpha = 1;
+        ctx.fillStyle = '#000';
     } else {
         ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = 0.5;
+        ctx.globalAlpha = PAINT_ALPHA;
+        ctx.fillStyle = PAINT_COLOR;
     }
-    ctx.fillStyle = erasing ? '#000' : '#ff3333';
     ctx.beginPath();
     ctx.arc(x, y, brushSize / 2, 0, Math.PI * 2);
     ctx.fill();
@@ -170,11 +183,12 @@ function drawLine(x1, y1, x2, y2) {
     if (erasing) {
         ctx.globalCompositeOperation = 'destination-out';
         ctx.globalAlpha = 1;
+        ctx.strokeStyle = '#000';
     } else {
         ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = 0.5;
+        ctx.globalAlpha = PAINT_ALPHA;
+        ctx.strokeStyle = PAINT_COLOR;
     }
-    ctx.strokeStyle = erasing ? '#000' : '#ff3333';
     ctx.lineWidth = brushSize;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
