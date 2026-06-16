@@ -304,7 +304,7 @@ MODEL_INFO = {
     "slp-2.5": "Starlight Precise v2.5 -- Updated precise model with improved consistency.",
     # --- Utilities ---
     "stab-1": "Stabilization v1 -- Video stabilization. Reduces camera shake and jitter.",
-    "remove-1": "Object Removal v1 -- AI-based object removal from video.",
+    "remove-1": "Object Removal v1 -- Requires a mask image (not yet supported in this script). Use Topaz Video AI desktop app for object removal.",
     # --- Frame Interpolation ---
     "apo-8": "Apollo v8 -- Frame interpolation for slow motion or FPS conversion. Smooth motion synthesis.",
     "apf-2": "Apollo Fast v2 -- Faster frame interpolation with good quality.",
@@ -332,6 +332,7 @@ UPSCALE_MODELS = {
 CREATIVE_MODELS = {"slc-1", "hyp-1", "hyp-2", "wonder-1", "remove-1"}
 PROMPT_MODELS = {"remove-1", "wonder-1", "slc-1"}
 UTILITY_MODELS = {"stab-1", "remove-1"}
+MASK_REQUIRED_MODELS = {"remove-1"}  # Models that need a mask image (not yet supported)
 
 def update_model_info():
     sel = itm['ModelCombo'].CurrentText or ""
@@ -673,6 +674,15 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
         pad_w, pad_h, pad_frames_total, pad_fps, pad_dur, pad_size = engine.probe_video(padded_path)
         log("  Padded clip: %d frames (was %d), %.1f sec" % (pad_frames_total, frames, pad_dur))
         topaz_input_path = padded_path
+
+    # Pre-flight: block models that require a mask
+    if model_code in MASK_REQUIRED_MODELS:
+        log("")
+        log("  *** ERROR: '%s' requires a mask image (mask_uri), which is not yet" % model_code)
+        log("  *** supported in this script. Use the Topaz Video AI desktop app")
+        log("  *** for object removal workflows.")
+        log("")
+        return
 
     if is_interp and interp_params:
         # --- Frame Interpolation path (Chronos / Apollo) ---
