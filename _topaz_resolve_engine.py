@@ -608,6 +608,53 @@ def _download_result(download_url, output_path, _log):
     _log("  Downloaded: %.1f MB" % dl_mb)
 
 
+def _upload_mask_asset(mask_path, api_key, _log):
+    """Upload a mask PNG to Topaz and return a mask_uri.
+
+    Tries the /video/assets endpoint first. If that fails,
+    falls back to a base64 data URI.
+    """
+    import base64
+
+    # Strategy 1: Try the /video/assets upload endpoint
+    try:
+        _log("  Trying asset upload endpoint...")
+        headers = {
+            "X-API-Key": api_key,
+            "accept": "application/json",
+            "content-type": "application/json"
+        }
+        mask_size = os.path.getsize(mask_path)
+        asset_payload = {
+            "type": "mask",
+            "contentType": "image/png",
+            "size": mask_size
+        }
+        resp = requests.post("https://api.topazlabs.com/video/assets",
+                           headers=headers, json=asset_payload)
+        if resp.status_code == 200:
+            asset_data = resp.json()
+            _log("  Asset endpoint response: %s" % json.dumps(asset_data, indent=2))
+            upload_url = asset_data.get("uploadUrl") or asset_data.get("url")
+            asset_uri = asset_data.get("uri") or asset_data.get("assetUri")
+            if upload_url:
+                _upload_with_retry(upload_url, mask_path, "image/png", _log)
+                _log("  Mask uploaded via asset endpoint.")
+                return asset_uri or upload_url
+        else:
+            _log("  Asset endpoint returned %d, trying fallback..." % resp.status_code)
+    except Exception as e:
+        _log("  Asset endpoint failed: %s, trying fallback..." % str(e))
+
+    # Strategy 2: Base64 data URI
+    _log("  Using base64 data URI for mask...")
+    with open(mask_path, "rb") as f:
+        mask_b64 = base64.b64encode(f.read()).decode("ascii")
+    data_uri = "data:image/png;base64,%s" % mask_b64
+    _log("  Data URI length: %d chars" % len(data_uri))
+    return data_uri
+
+
 def _create_api_request(payload, api_key, _log):
     """Submit a job to Topaz API. Returns (request_id, upload_url, all_upload_urls)."""
     headers = {
@@ -706,12 +753,17 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
     if prompt:
         upscale_filter["prompt"] = prompt
 
-    # Mask for object removal models
+    # Mask for object removal models -- must upload mask first to get URI
     if mask_path:
-        # Read mask dimensions and size
         mask_size = os.path.getsize(mask_path)
-        upscale_filter["maskSize"] = mask_size
         _log("  Mask file: %s (%d bytes)" % (mask_path, mask_size))
+        # Upload mask to Topaz's asset storage to get a mask_uri
+        mask_uri = _upload_mask_asset(mask_path, api_key, _log)
+        if mask_uri:
+            upscale_filter["mask_uri"] = mask_uri
+            _log("  mask_uri: %s" % mask_uri[:100])
+        else:
+            _log("  *** WARNING: Could not obtain mask_uri. API may reject request.")
 
     payload = {
         "source": {
@@ -738,24 +790,6 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
 
     # 2. Upload video with retry
     _upload_with_retry(upload_url, input_path, "video/%s" % src_container, _log)
-
-    # 3. Upload mask if provided
-    if mask_path:
-        _log("  Uploading mask...")
-        try:
-            if len(all_upload_urls) > 1:
-                # API provided a dedicated mask upload URL
-                mask_upload_url = all_upload_urls[1]
-                _log("  Using dedicated mask upload URL")
-            else:
-                # Fallback: try replacing source extension in the URL
-                mask_upload_url = upload_url.replace("source.mp4", "mask.png")
-                _log("  No dedicated mask URL -- using fallback pattern")
-            _upload_with_retry(mask_upload_url, mask_path, "image/png", _log)
-            _log("  Mask uploaded.")
-        except Exception as e:
-            _log("  Warning: mask upload failed: %s" % str(e))
-            _log("  Proceeding without mask -- API may reject the request.")
 
     # 4. Poll for completion
     download_url, completion_data = _poll_for_completion(request_id, api_key, _log, task_label="Processing")
