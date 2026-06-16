@@ -130,7 +130,8 @@ win = dispatcher.AddWindow({
     ui.Label({'ID': 'InterpHeader', 'Text': '── Frame Interpolation ──', 'Weight': 0}),
     ui.HGroup({'Weight': 0, 'ID': 'FPSMultRow'}, [
         ui.Label({'ID': 'FPSMultLabel', 'Text': 'FPS Multiplier:', 'Weight': 0.3}),
-        ui.ComboBox({'ID': 'FPSMultCombo', 'Weight': 0.7})
+        ui.ComboBox({'ID': 'FPSMultCombo', 'Weight': 0.5}),
+        ui.CheckBox({'ID': 'LockFPSCheck', 'Text': 'Lock to Slowmo', 'Checked': True, 'Weight': 0.2})
     ]),
     ui.HGroup({'Weight': 0, 'ID': 'SlowmoRow'}, [
         ui.Label({'ID': 'SlowmoLabel', 'Text': 'Slow Motion Factor:', 'Weight': 0.3}),
@@ -162,7 +163,8 @@ itm = win.GetItems()
 # Populate FPS multiplier combo
 for mult in ['1x', '2x', '3x', '4x', '8x', '16x']:
     itm['FPSMultCombo'].AddItem(mult)
-itm['FPSMultCombo'].CurrentIndex = 1  # default: 2x
+itm['FPSMultCombo'].CurrentIndex = 0  # default: 1x (locked to slowmo=1)
+itm['FPSMultCombo'].Enabled = False  # locked by default
 
 # ---------------------------------------------------------------------------
 # Models
@@ -363,7 +365,10 @@ def update_model_info():
     itm['ResCombo'].Enabled = not is_interp  # Interp keeps source resolution
 
     # Enable/disable interpolation controls
-    itm['FPSMultCombo'].Enabled = is_interp
+    # FPS combo: only enabled for interp models AND when not locked
+    fps_locked = itm['LockFPSCheck'].Checked
+    itm['FPSMultCombo'].Enabled = is_interp and not fps_locked
+    itm['LockFPSCheck'].Enabled = is_interp
     itm['SlowmoSpin'].Enabled = is_interp
     itm['InterpDupeCheck'].Enabled = is_interp
     itm['DupeThreshSpin'].Enabled = is_interp
@@ -1010,6 +1015,28 @@ def OnOpenLogs(ev):
     import subprocess
     subprocess.Popen(["open", _LOG_DIR])
 win.On.OpenLogsBtn.Clicked = OnOpenLogs
+
+def _sync_fps_to_slowmo():
+    """When locked, set FPS multiplier combo to match slowmo value."""
+    slowmo = itm['SlowmoSpin'].Value
+    # Map slowmo value to combo index: 1x=0, 2x=1, 3x=2, 4x=3, 8x=4, 16x=5
+    fps_map = {1: 0, 2: 1, 3: 2, 4: 3, 8: 4, 16: 5}
+    idx = fps_map.get(slowmo, 1)  # default to 2x if not exact match
+    itm['FPSMultCombo'].CurrentIndex = idx
+
+def OnSlowmoChanged(ev):
+    if itm['LockFPSCheck'].Checked:
+        _sync_fps_to_slowmo()
+win.On.SlowmoSpin.ValueChanged = OnSlowmoChanged
+
+def OnLockFPSChanged(ev):
+    is_interp = itm['ModelCombo'].CurrentText.split()[0] in INTERP_MODELS if itm['ModelCombo'].CurrentText else False
+    if itm['LockFPSCheck'].Checked:
+        itm['FPSMultCombo'].Enabled = False
+        _sync_fps_to_slowmo()
+    else:
+        itm['FPSMultCombo'].Enabled = is_interp
+win.On.LockFPSCheck.Clicked = OnLockFPSChanged
 
 win.Show()
 if _new_model_notice:
