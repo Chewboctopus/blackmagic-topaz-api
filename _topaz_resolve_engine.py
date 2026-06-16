@@ -609,16 +609,17 @@ def _download_result(download_url, output_path, _log):
 
 
 def _upload_mask_asset(mask_path, api_key, _log):
-    """Upload a mask PNG to Topaz and return a mask_uri.
+    """Upload a mask PNG and return a public URL for mask_uri.
 
-    Tries the /video/assets endpoint first. If that fails,
-    falls back to a base64 data URI.
+    Tries multiple strategies:
+    1. Topaz /video/assets endpoint
+    2. file.io (free one-time-download hosting)
+    3. 0x0.st (free file hosting)
     """
-    import base64
 
-    # Strategy 1: Try the /video/assets upload endpoint
+    # Strategy 1: Try the Topaz /video/assets upload endpoint
     try:
-        _log("  Trying asset upload endpoint...")
+        _log("  Trying Topaz asset upload endpoint...")
         headers = {
             "X-API-Key": api_key,
             "accept": "application/json",
@@ -639,20 +640,43 @@ def _upload_mask_asset(mask_path, api_key, _log):
             asset_uri = asset_data.get("uri") or asset_data.get("assetUri")
             if upload_url:
                 _upload_with_retry(upload_url, mask_path, "image/png", _log)
-                _log("  Mask uploaded via asset endpoint.")
+                _log("  Mask uploaded via Topaz asset endpoint.")
                 return asset_uri or upload_url
         else:
-            _log("  Asset endpoint returned %d, trying fallback..." % resp.status_code)
+            _log("  Topaz asset endpoint returned %d" % resp.status_code)
     except Exception as e:
-        _log("  Asset endpoint failed: %s, trying fallback..." % str(e))
+        _log("  Topaz asset endpoint failed: %s" % str(e))
 
-    # Strategy 2: Base64 data URI
-    _log("  Using base64 data URI for mask...")
-    with open(mask_path, "rb") as f:
-        mask_b64 = base64.b64encode(f.read()).decode("ascii")
-    data_uri = "data:image/png;base64,%s" % mask_b64
-    _log("  Data URI length: %d chars" % len(data_uri))
-    return data_uri
+    # Strategy 2: Upload to file.io (free, one-time download)
+    try:
+        _log("  Uploading mask to file.io...")
+        with open(mask_path, "rb") as f:
+            resp = requests.post("https://file.io", files={"file": f}, timeout=30)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("success"):
+                mask_url = data.get("link")
+                _log("  Mask hosted at: %s" % mask_url)
+                return mask_url
+        _log("  file.io returned %d" % resp.status_code)
+    except Exception as e:
+        _log("  file.io failed: %s" % str(e))
+
+    # Strategy 3: Upload to 0x0.st (free file hosting)
+    try:
+        _log("  Uploading mask to 0x0.st...")
+        with open(mask_path, "rb") as f:
+            resp = requests.post("https://0x0.st", files={"file": f}, timeout=30)
+        if resp.status_code == 200:
+            mask_url = resp.text.strip()
+            _log("  Mask hosted at: %s" % mask_url)
+            return mask_url
+        _log("  0x0.st returned %d" % resp.status_code)
+    except Exception as e:
+        _log("  0x0.st failed: %s" % str(e))
+
+    _log("  *** ERROR: Could not upload mask to any hosting service.")
+    return None
 
 
 def _create_api_request(payload, api_key, _log):
