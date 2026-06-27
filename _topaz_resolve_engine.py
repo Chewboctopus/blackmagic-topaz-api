@@ -736,12 +736,15 @@ def _determine_codec(input_path):
 # ---------------------------------------------------------------------------
 
 def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None, out_h=None,
-                        container="mov", filter_params=None, mask_path=None, progress_callback=None):
+                        container="mov", filter_params=None, mask_path=None, progress_callback=None,
+                        encoder_override=None, container_override=None):
     """Submit to Topaz API, upload, poll, download. Returns request ID.
 
     Args:
         mask_path: Optional path to a mask PNG for object removal (remove-1).
         progress_callback: Optional function(msg) called with status updates during polling.
+        encoder_override: Optional encoder code (H264, H265, ProRes, AV1, VP9) to override auto-detection.
+        container_override: Optional container (mp4, mov, mkv) to override auto-detection.
     """
     if filter_params is None:
         filter_params = {}
@@ -759,6 +762,12 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
         out_h = height * 2
 
     src_container, out_encoder, out_container = _determine_codec(input_path)
+
+    # Apply encoder/container overrides if provided
+    if encoder_override:
+        out_encoder = encoder_override
+    if container_override:
+        out_container = container_override
 
     # Build filter object with model-specific parameters
     upscale_filter = {
@@ -797,28 +806,69 @@ def process_topaz_video(input_path, output_path, api_key, model_code, out_w=None
         else:
             _log("  *** WARNING: Could not obtain mask_uri. API may reject request.")
 
-    payload = {
-        "source": {
-            "container": src_container,
-            "frameCount": nb_frames,
-            "frameRate": fps,
-            "duration": duration,
-            "size": file_size,
-            "resolution": {"width": width, "height": height}
-        },
-        "filters": [upscale_filter],
-        "output": {
-            "resolution": {"width": out_w, "height": out_h},
-            "frameRate": fps,
-            "videoEncoder": out_encoder,
-            "container": out_container,
-            "audioTransfer": "Copy",
-            "audioCodec": "AAC"
-        }
-    }
+    # Standard resolution fallback ladder (descending)
+    _FALLBACK_RESOLUTIONS = [
+        (7680, 4320),  # 8K
+        (4096, 2160),  # 4K DCI
+        (3840, 2160),  # 4K UHD
+        (2560, 1440),  # 2K
+        (1920, 1080),  # 1080p
+    ]
 
-    # 1. Create request
-    request_id, upload_url, all_upload_urls = _create_api_request(payload, api_key, _log)
+    # 1. Create request -- with auto-fallback if resolution is too high
+    request_id = None
+    upload_url = None
+    all_upload_urls = None
+
+    while True:
+        payload = {
+            "source": {
+                "container": src_container,
+                "frameCount": nb_frames,
+                "frameRate": fps,
+                "duration": duration,
+                "size": file_size,
+                "resolution": {"width": width, "height": height}
+            },
+            "filters": [upscale_filter],
+            "output": {
+                "resolution": {"width": out_w, "height": out_h},
+                "frameRate": fps,
+                "videoEncoder": out_encoder,
+                "container": out_container,
+                "audioTransfer": "Copy",
+                "audioCodec": "AAC"
+            }
+        }
+
+        try:
+            request_id, upload_url, all_upload_urls = _create_api_request(payload, api_key, _log)
+            break  # Success -- resolution accepted
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "resolution" in err_msg and "too high" in err_msg:
+                # Find the next smaller standard resolution that fits
+                current_pixels = out_w * out_h
+                fallback_found = False
+                for fb_w, fb_h in _FALLBACK_RESOLUTIONS:
+                    # Scale to match source aspect ratio
+                    src_aspect = width / height
+                    fb_aspect_w = int(fb_h * src_aspect) // 2 * 2  # keep even
+                    fb_aspect_h = fb_h
+                    if fb_aspect_w * fb_aspect_h < current_pixels:
+                        out_w, out_h = fb_aspect_w, fb_aspect_h
+                        _log("  *** Resolution too high for this model -- falling back to %dx%d" % (out_w, out_h))
+                        fallback_found = True
+                        break
+
+                if not fallback_found:
+                    # Last resort: output at source resolution (enhancement only, no upscale)
+                    out_w, out_h = width, height
+                    _log("  *** All standard resolutions rejected -- falling back to source: %dx%d" % (out_w, out_h))
+
+                continue  # Retry with smaller resolution
+            else:
+                raise  # Non-resolution error, re-raise
 
     # 2. Upload video with retry
     _upload_with_retry(upload_url, input_path, "video/%s" % src_container, _log)

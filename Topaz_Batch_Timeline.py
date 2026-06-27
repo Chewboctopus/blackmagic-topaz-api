@@ -63,6 +63,10 @@ win = dispatcher.AddWindow({
         ui.ComboBox({'ID': 'ResCombo', 'Weight': 0.7})
     ]),
     ui.HGroup({'Weight': 0}, [
+        ui.Label({'Text': 'Output Encoder:', 'Weight': 0.3}),
+        ui.ComboBox({'ID': 'EncoderCombo', 'Weight': 0.7})
+    ]),
+    ui.HGroup({'Weight': 0}, [
         ui.Label({'Text': 'Handles (Frames):', 'Weight': 0.3}),
         ui.LineEdit({'ID': 'Handles', 'Text': '0', 'Weight': 0.7})
     ]),
@@ -385,6 +389,10 @@ resolutions = [
 for r in resolutions:
     itm['ResCombo'].AddItem(r)
 
+# Populate encoder combo
+for enc in ["Auto (from source)", "H.265 (max 8192px)", "H.264 (max 4096px)", "ProRes (max 16386px)", "AV1 (max 16384px)", "VP9 (max 8192px)"]:
+    itm['EncoderCombo'].AddItem(enc)
+
 # Populate filter parameter combos
 for mode in ["Auto", "Manual", "Relative"]:
     itm['AutoMode'].AddItem(mode)
@@ -431,6 +439,33 @@ RES_MAP = {
     "4x Source": None,
 }
 
+# Max output resolution per encoder (width, height) from Topaz API docs
+ENCODER_MAX = {
+    "H264": (4096, 4096),
+    "H265": (8192, 8192),
+    "ProRes": (16386, 16386),
+    "AV1":  (16384, 8704),
+    "VP9":  (8192, 8192),
+}
+
+# Map UI text to API encoder code and container
+ENCODER_UI_MAP = {
+    "H.265 (max 8192px)": ("H265", "mp4"),
+    "H.264 (max 4096px)": ("H264", "mp4"),
+    "ProRes (max 16386px)": ("ProRes", "mov"),
+    "AV1 (max 16384px)": ("AV1", "mp4"),
+    "VP9 (max 8192px)": ("VP9", "mkv"),
+}
+
+def clamp_resolution(out_w, out_h, encoder_code):
+    """Clamp output resolution to the max supported by the encoder."""
+    max_w, max_h = ENCODER_MAX.get(encoder_code, (8192, 8192))
+    if out_w <= max_w and out_h <= max_h:
+        return out_w, out_h
+    # Scale down proportionally to fit within limits
+    scale = min(max_w / out_w, max_h / out_h)
+    return (int(out_w * scale) // 2 * 2, int(out_h * scale) // 2 * 2)  # keep even
+
 # Models that support creativity parameter
 # (model sets defined above as module-level constants)
 
@@ -438,6 +473,7 @@ def get_params():
     sel = itm['ModelCombo'].CurrentText or models[0]
     model_code = sel.split()[0]
     res_text = itm['ResCombo'].CurrentText or "4K UHD (3840x2160)"
+    encoder_text = itm['EncoderCombo'].CurrentText or "Auto (from source)"
     try:
         handles = int(itm['Handles'].Text)
     except ValueError:
@@ -479,7 +515,7 @@ def get_params():
         interp_params["interpolate_dupes"] = itm['InterpDupeCheck'].Checked
         interp_params["dupe_threshold"] = itm['DupeThreshSpin'].Value / 1000.0  # 1-100 -> 0.001-0.1
 
-    return model_code, res_text, handles, api_key, filter_params, interp_params, is_interp
+    return model_code, res_text, handles, api_key, filter_params, interp_params, is_interp, encoder_text
 
 def get_output_resolution(res_text, src_w, src_h):
     """Calculate output width and height from the resolution preset."""
@@ -594,7 +630,7 @@ def render_clip_via_resolve(clip_data, output_path):
 
     return rendered_file
 
-def process_single_clip(clip_data, model_code, res_text, handles, api_key, filter_params, interp_params=None, is_interp=False):
+def process_single_clip(clip_data, model_code, res_text, handles, api_key, filter_params, interp_params=None, is_interp=False, encoder_text="Auto (from source)"):
     """Process one clip. Runs SYNCHRONOUSLY."""
     clip_path = clip_data['path']
     clip_fps = clip_data['fps']
@@ -610,7 +646,18 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
     src_ext = os.path.splitext(clip_path)[1].lower()
     out_ext = ".mov" if src_ext == ".mov" else ".mp4"
     extracted_path = os.path.join(base_dir, base_name + "_extracted.mp4")
-    output_path = os.path.join(base_dir, base_name + "_" + model_code + out_ext)
+
+    # Build resolution tag for the output filename
+    res_tag = res_text.split("(")[0].strip().replace(" ", "").replace("x", "x") if "(" in res_text else res_text.replace(" ", "")
+    # e.g. "4K UHD (3840x2160)" -> "4KUHD", "8K (7680x4320)" -> "8K", "4x Source" -> "4xSource"
+
+    # Auto-version: find the next available _v## suffix to prevent overwrites
+    version = 1
+    while True:
+        output_path = os.path.join(base_dir, "%s_%s_%s_v%02d%s" % (base_name, model_code, res_tag, version, out_ext))
+        if not os.path.exists(output_path):
+            break
+        version += 1
 
     # Auto-bump handles if extraction will be less than 10 frames (API minimum)
     total_extracted = source_duration + (handles * 2)
@@ -696,10 +743,32 @@ def process_single_clip(clip_data, model_code, res_text, handles, api_key, filte
     else:
         # --- Upscale / Enhancement path ---
         out_w, out_h = get_output_resolution(res_text, w, h)
-        log("Sending to Topaz API (%s, %dx%d -> %dx%d)..." % (model_code, w, h, out_w, out_h))
+
+        # Determine encoder override
+        encoder_override = None
+        container_override = None
+        if encoder_text != "Auto (from source)" and encoder_text in ENCODER_UI_MAP:
+            encoder_override, container_override = ENCODER_UI_MAP[encoder_text]
+            enc_code = encoder_override
+        else:
+            # Auto: ProRes for .mov, H265 for everything else
+            src_ext = os.path.splitext(clip_data['path'])[1].lower()
+            enc_code = "ProRes" if src_ext == ".mov" else "H265"
+
+        # Clamp resolution to encoder max
+        clamped_w, clamped_h = clamp_resolution(out_w, out_h, enc_code)
+        if (clamped_w, clamped_h) != (out_w, out_h):
+            log("  *** Resolution %dx%d exceeds %s max -- clamped to %dx%d" % (
+                out_w, out_h, enc_code, clamped_w, clamped_h))
+            out_w, out_h = clamped_w, clamped_h
+
+        log("Sending to Topaz API (%s, %dx%d -> %dx%d, encoder=%s)..." % (
+            model_code, w, h, out_w, out_h, enc_code))
         req_id = engine.process_topaz_video(topaz_input_path, output_path, api_key, model_code,
                                             out_w=out_w, out_h=out_h, filter_params=filter_params,
-                                            mask_path=mask_path, progress_callback=log)
+                                            mask_path=mask_path, progress_callback=log,
+                                            encoder_override=encoder_override,
+                                            container_override=container_override)
 
     log("Done! Request ID: %s" % req_id)
 
@@ -830,7 +899,7 @@ def OnProcessCurrent(ev):
             log("Error: Could not get file path.")
             return
 
-        model_code, res_text, handles, api_key, filter_params, interp_params, is_interp = get_params()
+        model_code, res_text, handles, api_key, filter_params, interp_params, is_interp, encoder_text = get_params()
 
         # Figure out what track this clip is on
         clip_track = 1
@@ -868,7 +937,9 @@ def OnProcessCurrent(ev):
             source_duration = timeline_duration
 
         # Detect speed from source vs timeline duration
-        has_speed_effect = (source_duration != timeline_duration)
+        # Allow ±2 frame tolerance for rounding (e.g. 23.976 vs 24fps container differences)
+        frame_diff = abs(source_duration - timeline_duration)
+        has_speed_effect = (frame_diff > 2)
         if has_speed_effect:
             clip_speed = (source_duration / float(timeline_duration)) * 100.0
         else:
@@ -919,7 +990,7 @@ def OnProcessCurrent(ev):
 
         log("Processing: %s" % clip_data['name'])
         log("  Source: %s" % clip_path)
-        process_single_clip(clip_data, model_code, res_text, handles, api_key, filter_params, interp_params, is_interp)
+        process_single_clip(clip_data, model_code, res_text, handles, api_key, filter_params, interp_params, is_interp, encoder_text)
         log("\n=== COMPLETE ===")
 
     except Exception as e:
@@ -944,7 +1015,7 @@ def OnProcessBatch(ev):
             log("No clips on track %d." % track_idx)
             return
 
-        model_code, res_text, handles, api_key, filter_params, interp_params, is_interp = get_params()
+        model_code, res_text, handles, api_key, filter_params, interp_params, is_interp, encoder_text = get_params()
 
         log("Found %d clips on Track %d." % (len(clips), track_idx))
         log("UI will freeze during processing. This is normal.\n")
@@ -978,7 +1049,7 @@ def OnProcessBatch(ev):
             else:
                 source_duration = timeline_duration
 
-            if timeline_duration > 0 and source_duration != timeline_duration:
+            if timeline_duration > 0 and abs(source_duration - timeline_duration) > 2:
                 clip_speed = (source_duration / float(timeline_duration)) * 100.0
             else:
                 clip_speed = 100.0
@@ -987,8 +1058,8 @@ def OnProcessBatch(ev):
             extract_text = itm['ExtractMode'].CurrentText or ""
             force_full_extent = "Full Source" in extract_text
 
-            # Skip speed/reverse clips in Auto mode
-            if source_duration != timeline_duration and not force_full_extent:
+            # Skip speed/reverse clips in Auto mode (tolerance: >2 frames difference)
+            if abs(source_duration - timeline_duration) > 2 and not force_full_extent:
                 log("  *** Skipping: speed/reverse detected. Use 'Full Source Extent' or Render in Place.")
                 continue
 
@@ -1009,7 +1080,7 @@ def OnProcessBatch(ev):
 
             log("--- Clip %d/%d: %s ---" % (i+1, len(clips), clip.GetName()))
             try:
-                process_single_clip(clip_data, model_code, res_text, handles, api_key, filter_params, interp_params, is_interp)
+                process_single_clip(clip_data, model_code, res_text, handles, api_key, filter_params, interp_params, is_interp, encoder_text)
             except Exception as e:
                 log("ERROR on clip %d: %s" % (i+1, str(e)))
 
